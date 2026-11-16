@@ -1,6 +1,7 @@
 #include "Machine.h"
 
 #include "As5600.h"
+#include "SheetMap.h"
 
 #ifdef ARDUINO_ARCH_ESP32
 #include <Preferences.h>
@@ -375,32 +376,26 @@ void Machine::setSheetCorner(bool corner) {
 #endif
 }
 
-// Punto de la hoja (mm, centro = 0, arriba positivo) -> objetivo de los motores, interpolando bilineal en la celda de
-// la rejilla que lo contiene. Fuera de la hoja se recorta a la orilla.
-// X se interpola directo (el carro avanza en linea recta). Y es un ANGULO: sobre la hoja la distancia es altura x
-// tan(angulo), que no es lineal; por eso Y se interpola en tan(angulo) y luego se regresa a angulo. Asi, con solo las 4
-// esquinas ya queda bien en medio (interpolar el angulo directo daba hasta ~5 mm de error a media celda) y cada punto
-// extra corrige lo que el modelo no explica. El cero de Y (HOME Y) es el laser perpendicular a la hoja.
+// Punto de la hoja (mm, centro = 0, arriba positivo) -> objetivo de los motores. Fuera de la hoja se recorta a la orilla.
+//   V -> motor X (carro): X = centro de la hoja + V, en mm reales (el centro sale de las filas marcadas).
+//   H -> motor Y (pivote): H en mm se convierte con la tabla medida de SheetMap.h (angulo contra mm reales).
+// De la rejilla marcada solo se usan el centro y el sentido de cada eje (hacia donde crece V en X y H en Y), asi se
+// conservan el cero y los signos de siempre. El cero de Y (HOME Y) es el laser perpendicular a la hoja = H 0.
 bool Machine::moveToSheet(float hMm, float vMm, const char** err, char src) {
   if (!_gN) { *err = "Hoja sin calibrar"; return false; }
   if (!_xHomed) { *err = "Calibra X primero"; return false; }
   if (!_yZeroed) { *err = "Y sin referencia"; return false; }
   const int nc = gridCols(_gN), nr = gridRows(_gN);
-  float u = (hMm + Cfg::SHEET_W_MM / 2) / Cfg::SHEET_W_MM * (nc - 1);
-  float w = (Cfg::SHEET_H_MM / 2 - vMm) / Cfg::SHEET_H_MM * (nr - 1);
-  u = constrain(u, 0.0f, (float)(nc - 1));
-  w = constrain(w, 0.0f, (float)(nr - 1));
-  const int c = min((int)u, nc - 2), r = min((int)w, nr - 2);
-  const float fu = u - c, fw = w - r;
-  const int i00 = r * nc + c, i01 = i00 + 1, i10 = i00 + nc, i11 = i10 + 1;
-  auto lerp2 = [&](float a00, float a01, float a10, float a11) {
-    return (1 - fu) * (1 - fw) * a00 + fu * (1 - fw) * a01 + (1 - fu) * fw * a10 + fu * fw * a11;
-  };
-  constexpr float kRad = 0.01745329252f, kMaxDeg = 80.0f;  // mas alla de 80 grados la tangente ya no sirve
-  auto tanOf = [&](long ys) { return tanf(constrain(ys * Cfg::Y_DEG_PER_STEP, -kMaxDeg, kMaxDeg) * kRad); };
-  const float xs = lerp2(_gx[i00], _gx[i01], _gx[i10], _gx[i11]);
-  const float t = lerp2(tanOf(_gy[i00]), tanOf(_gy[i01]), tanOf(_gy[i10]), tanOf(_gy[i11]));
-  return moveCore((xs - _xOff) * Cfg::X_MM_PER_STEP / 10.0f, atanf(t) / kRad, 100, err, src, true);
+  const float h = constrain(hMm, -Cfg::SHEET_W_MM / 2, Cfg::SHEET_W_MM / 2);
+  const float v = constrain(vMm, -Cfg::SHEET_H_MM / 2, Cfg::SHEET_H_MM / 2);
+  auto rowAvg = [&](const long* a, int r) { float s = 0; for (int c = 0; c < nc; c++) s += a[r * nc + c]; return s / nc; };
+  auto colAvg = [&](const long* a, int c) { float s = 0; for (int r = 0; r < nr; r++) s += a[r * nc + c]; return s / nr; };
+  const float xTop = rowAvg(_gx, 0), xBot = rowAvg(_gx, nr - 1);
+  const float xCenSteps = (nr == 3) ? rowAvg(_gx, 1) : (xTop + xBot) / 2;  // con 9 puntos, la fila del centro
+  const int dirX = (xTop >= xBot) ? 1 : -1;                                 // V positivo (arriba) = mas o menos pasos de X
+  const int sgnY = (colAvg(_gy, nc - 1) >= colAvg(_gy, 0)) ? 1 : -1;        // H positivo (derecha) = angulo + o -
+  const float xMm = SheetMap::vToXmm(v, (xCenSteps - _xOff) * Cfg::X_MM_PER_STEP, dirX);
+  return moveCore(xMm / 10.0f, sgnY * SheetMap::hToYdeg(h), 100, err, src, true);
 }
 
 // ---- HOME marcado (CALIBRAR > HOME) ----
