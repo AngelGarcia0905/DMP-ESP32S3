@@ -1,7 +1,7 @@
 // DMP - Posicionador laser, firmware para ESP32-S3.
 // LED RGB de la placa (el azul tiene prioridad sobre el rojo):
 //   AZUL  = ejecutando algo: laser encendido, motores moviendose, HOME, CALIBRAR LIMITS, calibrar IMUs, todo el
-//           marcado de los puntos de la hoja, o editando un eje con la perilla
+//    hola       marcado de los puntos de la hoja, o editando un eje con la perilla
 //   ROJO  = nada en curso y ningun equipo conectado a la red Wi-Fi del ESP32 (red DMPS3)
 //   VERDE = nada en curso y conectado, o con el punto de acceso apagado en la pantalla RED
 #include <Arduino.h>
