@@ -1,0 +1,7 @@
+{
+  "name": "DmpCore",
+  "version": "0.1.0",
+  "description": "Shared pin map, stepper driver, sensors and machine logic for the DMP laser positioner",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

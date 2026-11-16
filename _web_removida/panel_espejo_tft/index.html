@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DMP posicionador laser</title>
+<!--
+  Panel web del ESP32-S3. Tiene los MISMOS modulos que la pantalla TFT (MOVER, HOME, CALIBRAR, SENSORES, RED) y habla
+  con la misma maquina, asi que lo que se hace aqui se ve en la pantalla y al reves. Lo sirve el propio ESP32
+  (http://192.168.4.1/) desde la flash. API: ver lib/DmpCore/src/WebApi.h.
+-->
+<style>
+  :root {
+    --bg:#000; --panel:#0d0d0d; --line:#2a2a2a; --text:#fff; --grey:#8a8a8a;
+    --green:#32cd64; --teal:#28cdcd; --red:#f04b50; --orange:#ffa028; --pink:#eb4696; --blue:#4696ff; --yellow:#f0d73c;
+    --ac: var(--green);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.4 system-ui, sans-serif; }
+  header { position:sticky; top:0; z-index:5; background:var(--bg); border-bottom:2px solid var(--ac);
+           display:flex; align-items:center; gap:10px; padding:8px 12px; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; color:var(--ac); }
+  .chip { font-size:12px; padding:2px 8px; border:1px solid var(--line); border-radius:10px; color:var(--grey); }
+  .chip.on { color:#000; background:var(--ac); border-color:var(--ac); }
+  .laserdot { width:12px; height:12px; border-radius:50%; border:2px solid var(--red); }
+  .laserdot.on { background:var(--red); }
+  #conn { margin-left:auto; }
+  #stop { background:var(--red); color:#fff; border:0; font-weight:700; padding:7px 14px; border-radius:6px; cursor:pointer; }
+  nav { display:grid; grid-template-columns:repeat(6, 1fr); gap:4px; padding:8px 12px; }
+  nav button { background:none; border:2px solid var(--c); color:var(--c); padding:8px 2px; border-radius:6px;
+               font-weight:700; font-size:11px; cursor:pointer; }
+  nav button.sel { background:var(--c); color:#000; }
+  main { padding:0 12px 80px; max-width:760px; margin:0 auto; }
+  section { display:none; } section.sel { display:block; }
+  .card { border:1px solid var(--ac); border-radius:8px; padding:10px 12px; margin:10px 0; background:var(--panel); }
+  .card h2 { font-size:14px; margin:0 0 8px; color:var(--ac); letter-spacing:.5px; }
+  .row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:6px 0; }
+  .lbl { color:var(--grey); min-width:64px; font-size:13px; }
+  .big { font-size:26px; font-weight:700; min-width:110px; font-variant-numeric:tabular-nums; }
+  button.b { background:none; border:1px solid var(--ac); color:var(--text); border-radius:5px; padding:7px 10px;
+             cursor:pointer; font-size:14px; min-width:44px; }
+  button.b:hover { background:#1a1a1a; }
+  button.b.fill { background:var(--ac); color:#000; font-weight:700; }
+  button.b:disabled { opacity:.35; cursor:default; }
+  input, select { background:#111; color:var(--text); border:1px solid var(--line); border-radius:5px; padding:6px 8px;
+                  font-size:14px; width:90px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td { padding:3px 4px; border-bottom:1px solid #161616; } td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+  tr.t td { color:var(--pink); font-weight:700; padding-top:10px; border:0; }
+  .g { color:var(--green); } .r { color:var(--red); } .o { color:var(--orange); } .m { color:var(--grey); }
+  .hint { color:var(--grey); font-size:12px; }
+  #toast { position:fixed; left:0; right:0; bottom:0; background:#fff; color:#000; padding:10px 14px; font-weight:600;
+           transform:translateY(100%); transition:transform .2s; z-index:9; }
+  #toast.show { transform:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">DMP</h1>
+  <span class="chip" id="stateChip">--</span>
+  <span class="laserdot" id="laserDot" title="Laser"></span>
+  <span class="chip" id="conn">sin conexion</span>
+  <button id="stop" title="Detiene los motores (el laser no se apaga)">STOP</button>
+</header>
+<nav id="nav"></nav>
+<main>
+
+<!-- ============================== MOVER ============================== -->
+<section id="s-mover">
+  <div class="card"><h2>EJES</h2>
+    <div class="row"><span class="lbl">Unidad</span>
+      <select id="mvUnit" style="width:auto"><option value="mm">mm / grados</option><option value="steps">pasos</option></select>
+      <span class="hint">pasos = pasos exactos de cada motor (X desde el HOME)</span></div>
+    <div class="row"><span class="lbl" id="mvXl">X mm</span><span class="big" id="mvX">--</span>
+      <span id="mvXb"></span><span id="mvXbs"></span></div>
+    <div class="row"><span class="lbl"></span><input id="mvXin" type="number" step="1"><button class="b" id="mvXgo">Ir</button></div>
+    <div class="row"><span class="lbl" id="mvYl">Y grd</span><span class="big" id="mvY">--</span>
+      <span id="mvYb"></span><span id="mvYbs"></span></div>
+    <div class="row"><span class="lbl"></span><input id="mvYin" type="number" step="0.1"><button class="b" id="mvYgo">Ir</button></div>
+    <div class="hint" id="mvLim"></div>
+  </div>
+  <div class="card"><h2>HOJA (mm, centro = 0, arriba positivo)</h2>
+    <div id="mvSheetOff" class="hint">Hoja sin calibrar: CALIBRAR &gt; PUNTOS DE LA HOJA.</div>
+    <div id="mvSheetOn">
+      <div class="row"><span class="lbl">H mm</span><span class="big" id="mvH">--</span><span id="mvHb"></span></div>
+      <div class="row"><span class="lbl">V mm</span><span class="big" id="mvV">--</span><span id="mvVb"></span></div>
+      <div class="row"><span class="lbl"></span>H <input id="mvHin" type="number"> V <input id="mvVin" type="number">
+        <button class="b" id="mvHVgo">Ir</button></div>
+    </div>
+  </div>
+  <div class="card"><h2>HOME Y LASER</h2>
+    <div class="row"><span class="lbl">HOME</span><button class="b" data-home="x">HOME X</button>
+      <button class="b" data-home="y">HOME Y</button><button class="b fill" data-home="both">AMBOS</button></div>
+    <div class="row"><span class="lbl">LASER</span><button class="b" id="mvLaser">--</button></div>
+    <div class="row"><span class="lbl">Real</span><span id="mvReal">--</span></div>
+  </div>
+</section>
+
+<!-- ============================== HOME ============================== -->
+<section id="s-home">
+  <div class="card"><h2>HOME</h2>
+    <div class="row"><button class="b" data-home="x">HOME X</button><button class="b" data-home="y">HOME Y</button>
+      <button class="b fill" data-home="both">AMBOS</button></div>
+    <div class="hint">Cada eje va al HOME marcado en CALIBRAR &gt; HOME (ahi X = 0 y Y = 0). X necesita estar referenciado;
+      Y va con el AS5600 por el lado mas corto (nunca mas de media vuelta).</div>
+    <div class="row" id="hmBusy"><span class="o" id="hmPhase"></span><button class="b" id="hmCancel">CANCELAR</button></div>
+    <table id="hmTab"></table>
+  </div>
+</section>
+
+<!-- ============================== CALIBRAR ============================== -->
+<section id="s-cal">
+  <div class="card"><h2>CALIBRAR LAS 2 IMUs</h2>
+    <div class="row"><button class="b fill" id="clImu">CALIBRAR</button><span id="clImuSt"></span></div>
+  </div>
+  <div class="card"><h2>HOME (MARCAR)</h2>
+    <div id="clHmJog"></div>
+    <div class="row"><button class="b fill" data-mark="both">MARCAR AMBOS AQUI</button>
+      <button class="b" data-mark="x">MARCAR X</button><button class="b" data-mark="y">MARCAR Y</button></div>
+    <div class="row"><button class="b" id="clRefX">REFERENCIAR X</button><span id="clZeroSt"></span></div>
+    <div class="hint">Mueve libre y marca: ahi queda X = 0 y/o Y = 0 (Y sobrescribe el cero del AS5600). Los HOME de MOVER
+      van a este lugar. REFERENCIAR X usa los finales de carrera para que X sepa donde esta (despues de reiniciar).</div>
+  </div>
+  <div class="card"><h2>CALIBRAR LIMITS</h2>
+    <div class="row"><span class="lbl">Corridas</span><select id="clRuns"></select>
+      <button class="b fill" id="clLimGo">INICIAR</button><button class="b" id="clLimCancel">CANCELAR</button></div>
+    <div class="o" id="clLimPhase"></div>
+    <table id="clLimTab"></table>
+  </div>
+  <div class="card"><h2>TOPES (limites de MOVER; aqui en CALIBRAR todo es libre)</h2>
+    <div class="row"><span class="lbl">MOVER</span><span id="tpSrc"></span></div>
+    <div class="hint">Con los 4 de X/Y min y max se usan esos; si no, el rectangulo de los puntos de la hoja; si no hay
+      ninguno, MOVER es libre.</div>
+  </div>
+  <div class="card"><h2>TOPES &gt; X/Y MIN Y MAX</h2>
+    <div id="tpJog"></div>
+    <div class="row" id="tpBtns"></div>
+    <div class="row"><button class="b" id="tpClear">BORRAR TOPES</button></div>
+    <div class="hint">Mueve el laser (sin limites) y pulsa el tope para guardarlo en esa posicion.</div>
+  </div>
+  <div class="card"><h2>TOPES &gt; PUNTOS DE LA HOJA</h2>
+    <div id="clGridIdle">
+      <div class="row"><span class="lbl">Puntos</span>
+        <select id="clGridN"><option>4</option><option>6</option><option>9</option></select>
+        <button class="b fill" id="clGridGo">INICIAR</button><span id="clGridSt"></span></div>
+      <div class="hint" id="clGridDesc"></div>
+    </div>
+    <div id="clGridMark">
+      <div class="row"><span class="big" id="clPtName">--</span><span class="m" id="clPtPos"></span></div>
+      <div id="clGridJog"></div>
+      <div class="row"><button class="b fill" id="clPtOk">OK - GUARDAR PUNTO</button>
+        <button class="b" id="clPtLaser">LASER</button><button class="b" id="clPtCancel">CANCELAR</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== AJUSTES ============================== -->
+<section id="s-aj">
+  <div class="card"><h2>VELOCIDAD</h2>
+    <div class="row"><span class="lbl">X p/s</span><select id="clSpX"></select><span class="m" id="clSpXu"></span></div>
+    <div class="row"><span class="lbl">Y p/s</span><select id="clSpY"></select><span class="m" id="clSpYu"></span></div>
+    <div class="row"><button class="b fill" id="clSpGo">GUARDAR</button></div>
+  </div>
+  <div class="card"><h2>MEDIR AVANCE</h2>
+    <div class="row"><button class="b fill" id="clMeasMark">MARCAR INICIO</button></div>
+    <div id="clMeasJog"></div>
+    <table id="clMeasTab"></table>
+    <div class="hint">Mueve X y Y (sin limites) y compara lo que el equipo cree con lo real medido.</div>
+  </div>
+</section>
+
+<!-- ============================== SENSORES ============================== -->
+<section id="s-sens"><div class="card"><h2>SENSORES</h2><table id="snTab"></table></div></section>
+
+<!-- ============================== RED ============================== -->
+<section id="s-red">
+  <div class="card"><h2>PUNTO DE ACCESO</h2>
+    <table id="rdTab"></table>
+    <div class="row"><button class="b" id="rdAp">APAGAR PUNTO DE ACCESO</button></div>
+    <div class="hint">Apagarlo corta esta conexion; se vuelve a encender en la pantalla RED del equipo.</div>
+  </div>
+</section>
+</main>
+<div id="toast"></div>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- utilidades
+const $ = (id) => document.getElementById(id);
+let S = null;            // ultimo /status
+let lastCmd = 0;         // instante del ultimo comando de movimiento (para no pisar el objetivo local)
+let tX = 0, tY = 0;      // objetivo local: X en cm, Y en grados
+let sheet = null;        // {h, v} objetivo en la hoja (null = el laser se movio por X/Y)
+let mark = null;         // marcado de puntos en curso: {n, i}
+let meas = null;         // inicio de MEDIR AVANCE: {xs, ys, enc}
+
+let toastT = 0;
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2500); }
+
+async function api(path, quiet) {
+  try {
+    const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 3000);
+    const r = await fetch(path, { signal: ctl.signal, cache: 'no-store' }); clearTimeout(to);
+    const j = await r.json();
+    if (!j.ok && !quiet) toast(j.error || 'Error');
+    return j;
+  } catch (e) { if (!quiet) toast('Sin conexion con el equipo'); return { ok: false, error: 'red' }; }
+}
+const f = (v, d) => (v >= 0 ? '+' : '') + Number(v).toFixed(d);
+function rows(tab, list) {  // list: [label, value, cls] o ['#', titulo]
+  $(tab).innerHTML = list.map(r => r[0] === '#' ? `<tr class="t"><td colspan="2">${r[1]}</td></tr>`
+    : `<tr><td>${r[0]}</td><td class="${r[2] || ''}">${r[1]}</td></tr>`).join('');
+}
+
+// ---------------------------------------------------------------- pestanas (mismos colores que la TFT)
+const TABS = [['mover', 'MOVER', '--green'], ['home', 'HOME', '--teal'], ['cal', 'CALIBRAR', '--orange'],
+              ['aj', 'AJUSTES', '--yellow'], ['sens', 'SENSORES', '--pink'], ['red', 'RED', '--blue']];
+let tab = 'mover';
+TABS.forEach(([id, name, c]) => {
+  const b = document.createElement('button'); b.textContent = name; b.style.setProperty('--c', `var(${c})`);
+  b.onclick = () => selTab(id); b.id = 'tab-' + id; $('nav').appendChild(b);
+});
+function selTab(id) {
+  tab = id;
+  TABS.forEach(([t, , c]) => { $('tab-' + t).classList.toggle('sel', t === id); $('s-' + t).classList.toggle('sel', t === id);
+    if (t === id) document.documentElement.style.setProperty('--ac', `var(${c})`); });
+  $('title').textContent = TABS.find(t => t[0] === id)[1];
+  render();
+}
+
+// ---------------------------------------------------------------- movimiento
+function clampX(cm) { return S ? Math.min(Math.max(cm, S.xMin), S.xMax) : cm; }
+function clampY(d) { return S ? Math.min(Math.max(d, S.yMin), S.yMax) : d; }
+async function moveTo(xcm, deg, free) {  // free = sin limites (marcar puntos, medir)
+  if (!S) return;
+  if (!free) { xcm = clampX(xcm); deg = clampY(deg); }  // como la perilla: se queda en la orilla
+  tX = xcm; tY = deg; lastCmd = Date.now(); sheet = free ? sheet : null;
+  await api(`/${free ? 'jog' : 'move'}?x=${xcm.toFixed(3)}&angle=${deg.toFixed(3)}`);
+}
+// Botones de X (mm) y Y (pasos del motor) para un contenedor; free = sin limites.
+function jogButtons(el, axis, free) {
+  const steps = axis === 'x' ? [-10, -1, 1, 10] : [-5, -1, 1, 5];
+  steps.forEach(d => {
+    const b = document.createElement('button'); b.className = 'b';
+    b.textContent = (d > 0 ? '+' : '') + d + (axis === 'x' ? '' : 'p');
+    b.title = axis === 'x' ? d + ' mm' : d + ' pasos del motor';
+    b.onclick = () => { if (!S) return;
+      axis === 'x' ? moveTo(tX + d / 10, tY, free) : moveTo(tX, tY + d * S.yDegStep, free); };
+    el.appendChild(b);
+  });
+}
+function jogBlock(id) {  // X y Y sin limites (marcado y medir)
+  const el = $(id);
+  el.innerHTML = '<div class="row"><span class="lbl">X mm</span><span class="big"></span><span></span></div>' +
+                 '<div class="row"><span class="lbl">Y grd</span><span class="big"></span><span></span></div>';
+  const r = el.querySelectorAll('.row');
+  jogButtons(r[0].children[2], 'x', true); jogButtons(r[1].children[2], 'y', true);
+}
+jogButtons($('mvXb'), 'x', false); jogButtons($('mvYb'), 'y', false);
+// Modo PASOS de MOVER: botones de pasos exactos (X desde el HOME; Y en pasos del angulo mostrado).
+const stepsMode = () => $('mvUnit').value === 'steps';
+[['x', 'mvXbs'], ['y', 'mvYbs']].forEach(([axis, id]) => [-100, -10, -1, 1, 10, 100].forEach(d => {
+  const b = document.createElement('button'); b.className = 'b'; b.textContent = (d > 0 ? '+' : '') + d;
+  b.title = d + ' pasos'; $(id).appendChild(b);
+  b.onclick = () => { if (!S) return;
+    axis === 'x' ? moveTo(tX + d * S.xMmStep / 10, tY, false) : moveTo(tX, tY + d * S.yDegStep, false); };
+}));
+$('mvUnit').onchange = () => render();
+jogBlock('clGridJog'); jogBlock('clMeasJog'); jogBlock('tpJog'); jogBlock('clHmJog');
+const TOPE_NAMES = ['X MIN', 'X MAX', 'Y MIN', 'Y MAX'];
+TOPE_NAMES.forEach((n, i) => {
+  const b = document.createElement('button'); b.className = 'b'; b.id = 'tp' + i;
+  b.onclick = async () => { if ((await api('/tope/set?i=' + i)).ok) toast(n + ' fijado'); };
+  $('tpBtns').appendChild(b);
+});
+$('tpClear').onclick = async () => {
+  if (!confirm('Borrar los topes X/Y min y max?')) return;
+  if ((await api('/tope/clear')).ok) toast('Topes borrados');
+};
+$('mvXgo').onclick = () => S && moveTo(stepsMode() ? Math.round(parseFloat($('mvXin').value)) * S.xMmStep / 10
+  : parseFloat($('mvXin').value) / 10, tY, false);
+$('mvYgo').onclick = () => S && moveTo(tX, stepsMode() ? Math.round(parseFloat($('mvYin').value)) * S.yDegStep
+  : Math.round(parseFloat($('mvYin').value) / S.yDegStep) * S.yDegStep, false);
+
+async function goSheet(h, v) {
+  if (!S) return;
+  h = Math.min(Math.max(h, -S.sheetW / 2), S.sheetW / 2); v = Math.min(Math.max(v, -S.sheetH / 2), S.sheetH / 2);
+  sheet = { h, v }; lastCmd = Date.now();
+  await api(`/sheet?h=${h.toFixed(1)}&v=${v.toFixed(1)}`);
+}
+['H', 'V'].forEach(ax => [-10, -1, 1, 10].forEach(d => {
+  const b = document.createElement('button'); b.className = 'b'; b.textContent = (d > 0 ? '+' : '') + d;
+  b.onclick = () => { const s = sheet || { h: 0, v: 0 };  // sin valor previo: parte del centro (como la TFT)
+    goSheet(s.h + (ax === 'H' ? d : 0), s.v + (ax === 'V' ? d : 0)); };
+  $('mv' + ax + 'b').appendChild(b);
+}));
+$('mvHVgo').onclick = () => goSheet(parseFloat($('mvHin').value) || 0, parseFloat($('mvVin').value) || 0);
+
+// ---------------------------------------------------------------- acciones
+$('stop').onclick = async () => { await api('/stop'); toast('STOP'); };
+document.querySelectorAll('[data-home]').forEach(b => b.onclick = async () => {
+  if ((await api('/home?axis=' + b.dataset.home)).ok) toast('HOME...'); });
+document.querySelectorAll('[data-mark]').forEach(b => b.onclick = async () => {
+  if (b.dataset.mark !== 'x' && !confirm('Marcar Y sobrescribe el cero del AS5600 con el angulo actual. Continuar?')) return;
+  if ((await api('/home/mark?axis=' + b.dataset.mark)).ok) { toast('HOME marcado'); lastCmd = 0; }
+});
+$('clRefX').onclick = async () => { if ((await api('/refx')).ok) toast('Referenciando X...'); };
+$('hmCancel').onclick = $('clLimCancel').onclick = async () => { await api('/cancel'); toast('Cancelado'); };
+const toggleLaser = () => api('/laser?state=' + (S && S.laser ? 'off' : 'on'));
+$('mvLaser').onclick = $('clPtLaser').onclick = toggleLaser;
+
+$('clImu').onclick = async () => { if ((await api('/imu/calibrate')).ok) toast('Calibrando IMUs'); };
+$('clLimGo').onclick = async () => { if ((await api('/limits/start?n=' + $('clRuns').value)).ok) toast('Calibrando limits...'); };
+
+// Puntos de la hoja: mismos nombres, orden y posiciones que el firmware (Machine::pointName / pointSheetMm).
+const PT_NAMES = { 4: ['SUP IZQ', 'SUP DER', 'INF IZQ', 'INF DER'],
+  6: ['SUP IZQ', 'SUP CENTRO', 'SUP DER', 'INF IZQ', 'INF CENTRO', 'INF DER'],
+  9: ['SUP IZQ', 'SUP CENTRO', 'SUP DER', 'CENTRO IZQ', 'CENTRO', 'CENTRO DER', 'INF IZQ', 'INF CENTRO', 'INF DER'] };
+function ptPos(n, i) { const nc = n === 4 ? 2 : 3, nr = n === 9 ? 3 : 2, r = Math.floor(i / nc), c = i % nc;
+  return [-S.sheetW / 2 + c * S.sheetW / (nc - 1), S.sheetH / 2 - r * S.sheetH / (nr - 1)]; }
+const GRID_DESC = { 4: '4 esquinas.', 6: '4 esquinas + centro arriba y centro abajo.', 9: '4 esquinas, centros de los lados y centro.' };
+$('clGridN').onchange = () => { $('clGridDesc').textContent = GRID_DESC[$('clGridN').value]; };
+$('clGridN').onchange();
+$('clGridGo').onclick = async () => {
+  const n = parseInt($('clGridN').value);
+  if ((await api('/grid/begin?n=' + n)).ok) { mark = { n, i: 0 }; tX = S.tx; tY = S.ty; render(); }
+};
+$('clPtOk').onclick = async () => {
+  if (!(await api('/grid/mark?i=' + mark.i)).ok) return;
+  if (mark.i + 1 >= mark.n) { await api('/grid/commit'); toast(`Hoja lista: ${mark.n} pts`); mark = null; }
+  else { toast(`Punto ${mark.i + 1} guardado`); mark.i++; }
+  render();
+};
+$('clPtCancel').onclick = () => { mark = null; toast('Marcado cancelado'); render(); };
+
+$('clSpGo').onclick = async () => {
+  if ((await api(`/speed?x=${$('clSpX').value}&y=${$('clSpY').value}`)).ok) toast('Velocidad guardada');
+};
+['clSpX', 'clSpY'].forEach(id => $(id).onchange = render);
+$('clMeasMark').onclick = () => { if (!S) return;
+  meas = { xs: S.xSteps, ys: S.ySteps, enc: (S.enc.live && S.enc.zero) ? S.enc.rel : null };
+  tX = S.tx; tY = S.ty; toast('Inicio marcado'); render(); };
+
+$('rdAp').onclick = async () => {
+  if (!confirm('Al apagar el punto de acceso se pierde esta conexion. Continuar?')) return;
+  await api('/ap?state=off');
+};
+
+// ---------------------------------------------------------------- estado
+async function poll() {
+  const s = await api('/status', true);
+  if (s.ok) {
+    const first = !S; S = s;
+    if (first || Date.now() - lastCmd > 800) { tX = S.tx; tY = S.ty; }  // si no hay un comando reciente, manda el equipo
+    if (first) fillSelects();
+    $('conn').textContent = 'conectado'; $('conn').classList.add('on');
+    render();
+  } else { $('conn').textContent = 'sin conexion'; $('conn').classList.remove('on'); }
+  setTimeout(poll, 400);
+}
+function fillSelects() {
+  let o = ''; for (let n = 1; n <= S.runsMax; n++) o += `<option ${n === 3 ? 'selected' : ''}>${n}</option>`;
+  $('clRuns').innerHTML = o;
+  o = ''; for (let v = S.spsMin; v <= S.spsMax; v += S.spsStep) o += `<option>${v}</option>`;
+  $('clSpX').innerHTML = o; $('clSpY').innerHTML = o;
+  $('clSpX').value = S.spsX; $('clSpY').value = S.spsY;
+  if (!meas) meas = { xs: S.xSteps, ys: S.ySteps, enc: (S.enc.live && S.enc.zero) ? S.enc.rel : null };
+}
+
+function render() {
+  if (!S) return;
+  const st = S.homing ? (S.testing ? 'LIMITS' : 'HOME') : (S.moving ? 'MOV' : 'listo');
+  $('stateChip').textContent = st; $('stateChip').classList.toggle('on', S.homing || S.moving);
+  $('laserDot').classList.toggle('on', S.laser);
+  const yReal = (S.enc.live && S.enc.zero) ? S.enc.rel : S.angle;
+
+  if (tab === 'mover') {
+    const sm = stepsMode();  // unidad: pasos o mm / grados
+    $('mvXl').textContent = sm ? 'X pas' : 'X mm'; $('mvYl').textContent = sm ? 'Y pas' : 'Y grd';
+    $('mvX').textContent = sm ? f(Math.round(tX * 10 / S.xMmStep), 0) : f(tX * 10, 1);
+    $('mvY').textContent = sm ? f(Math.round(tY / S.yDegStep), 0) : f(tY, 1);
+    $('mvXb').style.display = sm ? 'none' : ''; $('mvYb').style.display = sm ? 'none' : '';
+    $('mvXbs').style.display = sm ? '' : 'none'; $('mvYbs').style.display = sm ? '' : 'none';
+    $('mvYin').step = sm ? 1 : 0.1;
+    $('mvLim').textContent = S.limSrc === 0 ? 'Sin topes: X y Y se mueven a cualquier parte (CALIBRAR > TOPES).'
+      : `Topes (${S.limSrc === 1 ? 'X/Y min y max' : 'puntos de la hoja'}): ` +
+        (S.xHomed ? `X ${f(S.xMin * 10, 0)} a ${f(S.xMax * 10, 0)} mm` : 'X libre (falta calibrar X)') + ', ' +
+        (S.yRef ? `Y ${f(S.yMin, 1)} a ${f(S.yMax, 1)} grd` : 'Y libre (sin referencia)');
+    $('mvSheetOff').style.display = S.grid ? 'none' : ''; $('mvSheetOn').style.display = S.grid ? '' : 'none';
+    $('mvH').textContent = sheet ? f(sheet.h, 0) : '--'; $('mvV').textContent = sheet ? f(sheet.v, 0) : '--';
+    $('mvLaser').textContent = S.laser ? 'LASER: ON' : 'LASER: OFF'; $('mvLaser').classList.toggle('fill', S.laser);
+    $('mvReal').textContent = sm ? `X ${f(S.xRel, 0)} pasos   Y ${f(Math.round(S.angleSign * S.ySteps), 0)} pasos`
+      : `X ${f(S.x * 10, 1)} mm   Y ${f(yReal, 2)} grd` + (S.enc.live && S.enc.zero ? ' (AS5600)' : ' (pasos)');
+  }
+
+  if (tab === 'home') {
+    $('hmBusy').style.display = S.homing ? '' : 'none'; $('hmPhase').textContent = S.phase;
+    rows('hmTab', [['Eje X', S.xHomed ? 'referido' : 'sin ref. (CALIBRAR > HOME > REFERENCIAR X)', S.xHomed ? 'g' : 'r'],
+      ['HOME de X', S.xHomeSet ? 'marcado' : 'sin marcar (X- )', S.xHomeSet ? 'g' : ''],
+      ['Riel guardado', S.rail > 0 ? `${S.rail} pasos = ${(S.rail * S.xMmStep / 10).toFixed(1)} cm` : 'sin medir', S.rail > 0 ? 'g' : ''],
+      ['Eje Y', S.yRef ? 'con referencia' : 'sin referencia', S.yRef ? 'g' : ''],
+      ['AS5600', S.enc.live && S.enc.zero ? 'listo' : 'no listo', S.enc.live && S.enc.zero ? 'g' : 'r'],
+      ['Ultimo aviso', S.error || '--', S.error ? 'o' : 'm']]);
+  }
+
+  if (tab === 'cal') {
+    $('clImuSt').innerHTML = S.imus.map(m => `${m.name}: ` + (!m.ok ? '<span class="r">NO CONECT</span>'
+      : m.state === 'running' ? `<span class="o">cal. ${m.progress}%</span>` : m.state === 'failed' ? '<span class="r">fallo</span>'
+      : m.state === 'calibrated' ? '<span class="g">calibrada</span>' : 'sin calib')).join(' &nbsp; ');
+    $('clZeroSt').innerHTML = (S.xHomed ? '<span class="g">X referenciado</span>' : '<span class="r">X sin referencia</span>') +
+      ' &nbsp; ' + (!S.enc.present ? '<span class="r">AS5600 NO CONECT</span>' : !S.enc.live ? '<span class="r">AS5600 sin iman</span>'
+      : '<span class="g">AS5600 ok</span>');
+    $('clLimPhase').textContent = S.testing ? 'Calibrando limits: ' + S.phase : '';
+    $('clLimGo').disabled = S.homing;
+    rows('clLimTab', [['Pasos riel (guardado)', S.rail > 0 ? S.rail : 'sin medir', S.rail > 0 ? 'g' : ''],
+      ...S.legs.map((v, i) => [`muestra ${i + 1}`, v])]);
+    $('clGridIdle').style.display = mark ? 'none' : ''; $('clGridMark').style.display = mark ? '' : 'none';
+    $('clGridSt').innerHTML = S.grid ? `<span class="g">${S.grid} puntos</span>` : 'sin calibrar';
+    if (!S.xHomed) $('clGridSt').innerHTML += ' <span class="r">Falta calibrar X</span>';
+    else if (!S.yRef) $('clGridSt').innerHTML += ' <span class="r">Y sin referencia</span>';
+    if (mark) {
+      const [h, v] = ptPos(mark.n, mark.i);
+      $('clPtName').textContent = `${mark.i + 1}/${mark.n} ${PT_NAMES[mark.n][mark.i]}`;
+      $('clPtPos').textContent = `hoja H ${f(h, 1)} V ${f(v, 1)} mm`;
+      $('clPtLaser').textContent = S.laser ? 'LASER: ON' : 'LASER: OFF';
+    }
+    $('tpSrc').innerHTML = S.limSrc === 1 ? '<span class="g">limitado por X/Y min y max</span>'
+      : S.limSrc === 2 ? '<span class="g">limitado por los puntos de la hoja</span>' : 'libre (sin topes)';
+    TOPE_NAMES.forEach((n, i) => { const v = S.topes[i];
+      $('tp' + i).textContent = n + ': ' + (v === null ? '--' : i < 2 ? f(v * 10, 1) + ' mm' : f(v, 1) + ' grd'); });
+    const jx = (id) => $(id).querySelectorAll('.big');
+    [jx('clGridJog'), jx('tpJog'), jx('clHmJog')].forEach(b => { b[0].textContent = f(tX * 10, 1); b[1].textContent = f(tY, 1); });
+  }
+
+  if (tab === 'aj') {  // AJUSTES: velocidad de cada eje y medir avance
+    $('clSpXu').textContent = `= ${($('clSpX').value * S.xMmStep).toFixed(2)} mm/s`;
+    $('clSpYu').textContent = `= ${($('clSpY').value * S.yDegStep).toFixed(1)} grd/s`;
+    const mj = $('clMeasJog').querySelectorAll('.big');
+    mj[0].textContent = f(tX * 10, 1); mj[1].textContent = f(tY, 1);
+    if (meas) {
+      const dx = S.xSteps - meas.xs, dy = Math.round(S.angleSign * (S.ySteps - meas.ys));
+      let enc = '--';
+      if (meas.enc !== null && S.enc.live && S.enc.zero) { let d = S.enc.rel - meas.enc;
+        while (d > 180) d -= 360; while (d < -180) d += 360; enc = f(d, 2); }
+      rows('clMeasTab', [['X pasos', f(dx, 0)], ['X cree mm', f(dx * S.xMmStep, 2), 'o'],
+        ['Y pasos', f(dy, 0)], ['Y cree grd', f(dy * S.yDegStep, 2), 'o'], ['Y AS5600 grd', enc, 'g']]);
+    }
+  }
+
+  if (tab === 'sens') {
+    rows('snTab', [['#', 'MOTOR X (riel)'],
+      ['Velocidad', `${S.spsX} p/s = ${(S.spsX * S.xMmStep).toFixed(2)} mm/s`], ['Reduccion', S.xRed + ':1'],
+      ['mm/paso', S.xMmStep.toFixed(5)], ['Pasos por vuelta (motor / salida)', `${S.stepsRev} / ${S.stepsRev * S.xRed}`],
+      ['Posicion', `${S.xSteps} pasos = ${f(S.x * 10, 1)} mm`],
+      ['Riel guardado', S.rail > 0 ? `${S.rail} pasos = ${(S.rail * S.xMmStep).toFixed(1)} mm` : 'sin medir', S.rail > 0 ? 'g' : ''],
+      ['Referencia', S.xHomed ? 'calibrado' : 'sin ref.', S.xHomed ? 'g' : 'r'], ['Sentido', S.xInv ? 'invertido' : 'normal'],
+      ['Pasos totales', S.totX, 'm'],
+      ['#', 'MOTOR Y (angulo)'],
+      ['Velocidad', `${S.spsY} p/s = ${(S.spsY * S.yDegStep).toFixed(1)} grd/s`], ['Reduccion', S.yRed + ':1'],
+      ['grd/paso', S.yDegStep.toFixed(4)], ['Pasos por vuelta (motor / salida)', `${S.stepsRev} / ${S.stepsRev * S.yRed}`],
+      ['Posicion', `${S.ySteps} pasos = ${f(S.angle, 2)} grd`],
+      ['Referencia', S.yRef ? 'si' : 'no', S.yRef ? 'g' : 'r'], ['Pasos totales', S.totY, 'm'],
+      ['#', 'FINALES DE CARRERA'],
+      ['Fin X-', S.limMin ? 'ACTIVADO' : 'libre', S.limMin ? 'r' : 'g'], ['Fin X+', S.limMax ? 'ACTIVADO' : 'libre', S.limMax ? 'r' : 'g'],
+      ['#', 'LASER'], ['Estado', S.laser ? 'ENCENDIDO' : 'apagado', S.laser ? 'r' : 'm'],
+      ['#', 'AS5600 (angulo)'], ['Conexion', S.enc.present ? 'conectado' : 'NO CONECT', S.enc.present ? 'g' : 'r'],
+      ['Iman', S.enc.zone, S.enc.live ? 'g' : 'r'], ['Cero', S.enc.zero ? 'fijado' : 'sin fijar', S.enc.zero ? 'g' : ''],
+      ['Angulo', S.enc.live && S.enc.zero ? f(S.enc.rel, 2) : '--'],
+      ...S.imus.flatMap(m => [['#', m.name.toUpperCase()], ['Conexion', m.ok ? 'conectada' : 'NO CONECT', m.ok ? 'g' : 'r'],
+        ['Calibracion', !m.ok ? '--' : m.state === 'running' ? `cal. ${m.progress}%` : m.state === 'failed' ? 'fallo'
+          : m.state === 'calibrated' ? 'calibrada' : 'sin calib', m.state === 'calibrated' ? 'g' : '']]),
+      ['#', 'HOJA'], ['Puntos', S.grid || 'sin calib', S.grid ? 'g' : ''], ['Tamano', `${S.sheetW} x ${S.sheetH} mm`],
+      ['#', 'RED'], ['Punto de acceso', S.ap ? 'ON' : 'OFF', S.ap ? 'g' : 'm'], ['Equipos', `${S.clients} de 4`]]);
+  }
+
+  if (tab === 'red') {
+    rows('rdTab', [['Red', S.ssid], ['IP', S.ip], ['Equipos', `${S.clients} de 4`, S.clients ? 'g' : 'r'],
+      ['Estado', S.ap ? 'encendido' : 'apagado', S.ap ? 'g' : 'm']]);
+  }
+}
+
+selTab('mover');
+poll();
+</script>
+</body>
+</html>

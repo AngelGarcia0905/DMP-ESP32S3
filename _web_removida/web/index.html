@@ -1,0 +1,2908 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Panel de Control - Riel de Precision ESP32</title>
+<style>
+  /* =====================================================================
+     PALETA Y BASE — estilo "clasico Windows" (bordes en relieve, sin
+     gradientes ni sombras difusas, sin animaciones).
+     ===================================================================== */
+  :root{
+    --face:#ECE9D8;      /* fondo de panel */
+    --face2:#D4D0C8;     /* fondo alterno (barra de estado, spinners) */
+    --white:#FFFFFF;
+    --lightgrey:#DFDFDF;
+    --darkgrey:#808080;
+    --black:#0A0A0A;
+    --text:#000000;
+    --titlebar:#0A246A;
+    --titletext:#FFFFFF;
+    --led-on:#20C020;
+    --led-off:#B00000;
+    --led-idle:#A0A000;
+  }
+
+  *{ box-sizing:border-box; }
+
+  html,body{
+    margin:0; padding:0;
+    height:100%;
+    background:var(--face);
+    font-family: Tahoma, "Segoe UI", "MS Sans Serif", sans-serif;
+    font-size:11px;
+    color:var(--text);
+    overflow:hidden; /* el scroll vive dentro de .content, no en la pagina */
+  }
+
+  body{
+    display:flex;
+    flex-direction:column;
+  }
+
+  /* ------------------- aplicacion a pantalla completa ------------------- */
+  /* Ocupa el 100% del viewport: sin marco de "ventana flotante". */
+  .window{
+    flex:1 1 auto;
+    display:flex;
+    flex-direction:column;
+    min-height:0;
+    width:100%;
+    background:var(--face);
+  }
+
+  .titlebar{
+    flex:0 0 auto;
+    background:var(--titlebar);
+    color:var(--titletext);
+    font-weight:bold;
+    padding:2px 8px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+  }
+  .titlebar .caption{ letter-spacing:.3px; }
+
+  /* Columnas: grid explicito de 3 columnas, cada una un contenedor .col
+     con una lista fija de secciones (en vez de dejar que el navegador
+     reparta y equilibre solo, que con pocos bloques grandes que no se
+     pueden partir deja huecos grandes al final de alguna columna). El
+     reparto de que seccion va en que columna se eligio a mano para que
+     el alto total de las 3 columnas quede parecido. Solo esta zona hace
+     scroll si algo no cabe. */
+  .content{
+    flex:1 1 auto;
+    min-height:0;
+    overflow:auto;
+    padding:8px;
+    display:grid;
+    grid-template-columns:repeat(3, 1fr);
+    gap:0 2px;
+  }
+  .content .col{
+    display:flex;
+    flex-direction:column;
+    min-width:0;
+  }
+  /* separador vertical fijo entre columnas, similar al column-rule de antes */
+  .content .col:not(:last-of-type){
+    border-right:2px solid var(--darkgrey);
+    padding-right:16px;
+  }
+  .content .col:not(:first-child){
+    padding-left:16px;
+  }
+
+  /* Consola y referencia de codigo G: fila completa al final de la pagina */
+  .bottomrow{
+    grid-column:1 / -1;
+    display:grid;
+    grid-template-columns:2fr 1fr;
+    gap:0 14px;
+    margin-top:6px;
+    border-top:2px solid var(--darkgrey);
+    padding-top:8px;
+  }
+  .bottomrow .console-box{ height:150px; }
+  .jogrow{ flex-wrap:nowrap; }
+  .jogrow .btn{ min-width:34px; padding:4px 6px; }
+  .jogval{ min-width:78px; text-align:center; }
+  @media (max-width: 680px){
+    .jogrow{ flex-wrap:wrap; }          /* en celular la etiqueta ocupa su linea y los botones van debajo */
+    .jogrow .btn{ min-width:52px; }
+    .jogval{ min-width:88px; }
+  }
+  @media (max-width: 380px){
+    .jogrow .btn{ min-width:42px; padding:10px 3px; }
+    .jogval{ min-width:66px; }
+  }
+  @media (max-width: 820px){ .bottomrow{ grid-template-columns:1fr; } }
+
+  /* --------------------------- groupbox --------------------------- */
+  fieldset.groupbox{
+    border:none;
+    margin:0 0 8px 0;
+    padding:6px 7px 5px 7px;
+    box-shadow:
+      inset -1px -1px 0 var(--white),
+      inset  1px  1px 0 var(--darkgrey);
+    border:1px solid var(--darkgrey);
+  }
+  fieldset.groupbox legend{
+    padding:1px 6px;
+    font-weight:bold;
+    font-size:12px;
+    background:var(--face);
+  }
+
+  /* Color distintivo por seccion: borde mas grueso + fondo tintado muy
+     suave + una sombra dura (sin difuminar, estilo clasico) para que cada
+     apartado se note como bloque aparte. Los campos/botones/opciones de
+     adentro quedan exactamente igual que siempre. */
+  .groupbox.sec-conexion,
+  .groupbox.sec-calibracion,
+  .groupbox.sec-posicionamiento,
+  .groupbox.sec-control,
+  .groupbox.sec-telemetria,
+  .groupbox.sec-secuencia,
+  .groupbox.sec-simulacion,
+  .groupbox.sec-consola{
+    border-left-width:6px;
+    box-shadow:
+      2px 2px 0 rgba(0,0,0,0.15),
+      inset -1px -1px 0 var(--white),
+      inset  1px  1px 0 var(--darkgrey);
+  }
+
+  .groupbox.sec-conexion       { border-left-color:#1B4F91; background:#E3EAF4; }
+  .sec-conexion       legend{ color:#1B4F91; background:#E3EAF4; }
+
+  .groupbox.sec-calibracion    { border-left-color:#B36A00; background:#F3E8D6; }
+  .sec-calibracion    legend{ color:#B36A00; background:#F3E8D6; }
+
+  .groupbox.sec-posicionamiento{ border-left-color:#1F7A3D; background:#DFEFE3; }
+  .sec-posicionamiento legend{ color:#1F7A3D; background:#DFEFE3; }
+
+  .groupbox.sec-control        { border-left-color:#A0303A; background:#F2E0E2; }
+  .sec-control        legend{ color:#A0303A; background:#F2E0E2; }
+
+  .groupbox.sec-telemetria     { border-left-color:#A8285A; background:#F3DEE6; }
+  .sec-telemetria     legend{ color:#A8285A; background:#F3DEE6; }
+
+  .groupbox.sec-secuencia      { border-left-color:#7A3AA8; background:#EAE0F3; }
+  .sec-secuencia      legend{ color:#7A3AA8; background:#EAE0F3; }
+
+  .groupbox.sec-simulacion     { border-left-color:#1B7A7A; background:#DEEFEF; }
+  .sec-simulacion     legend{ color:#1B7A7A; background:#DEEFEF; }
+
+  .groupbox.sec-consola        { border-left-color:#4A4A55; background:#E4E4E9; }
+  .sec-consola        legend{ color:#4A4A55; background:#E4E4E9; }
+
+  .groupbox.sec-gcode          { border-left-color:#8A5A1B; background:#F1EADF; }
+  .sec-gcode          legend{ color:#8A5A1B; background:#F1EADF; }
+
+  .gtable td.gnote{
+    font-family:inherit;
+    white-space:normal;
+    font-style:italic;
+    color:#555;
+    background:var(--face2);
+  }
+
+  /* ------------------- ventana emergente (Referencia Codigo G) ------------------- */
+  /* Flota encima de todo en vez de empujar el contenido de la columna: asi la
+     pantalla principal nunca crece ni necesita scroll por esta tabla. */
+  .gmodal-backdrop{
+    position:fixed;
+    inset:0;
+    background:rgba(0,0,0,.45);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index:1000;
+    padding:20px;
+  }
+  .gmodal{
+    background:var(--face);
+    border:1px solid var(--darkgrey);
+    box-shadow:
+      2px 2px 0 rgba(0,0,0,0.25),
+      inset -1px -1px 0 var(--white),
+      inset  1px  1px 0 var(--darkgrey);
+    padding:8px 12px 12px 12px;
+    width:920px;
+    max-width:100%;
+    max-height:90vh;
+    overflow:auto;
+  }
+  .gmodal-head{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    font-weight:bold;
+    color:#8A5A1B;
+    padding-bottom:5px;
+    margin-bottom:8px;
+    border-bottom:1px solid var(--darkgrey);
+  }
+  .gcols{
+    display:grid;
+    grid-template-columns: 1fr 1fr;
+    gap:8px;
+    align-items:start;
+  }
+  @media (max-width: 700px){
+    .gcols{ grid-template-columns: 1fr; }
+  }
+
+  .row{
+    display:flex;
+    align-items:center;
+    gap:4px;
+    margin-bottom:3px;
+    flex-wrap:wrap;
+  }
+  /* el atributo [hidden] pierde contra .row{display:flex} si no se refuerza
+     aqui (misma especificidad, pero la hoja de estilos del navegador va
+     primero en la cascada) — sin esto, alternar el.hidden en JS no oculta
+     nada y el modo que no esta activo se queda visible, desperdiciando
+     espacio en el panel. */
+  [hidden]{ display:none !important; }
+  .row label{ width:104px; flex:0 0 auto; font-weight:bold; }
+  .row .grow{ flex:1 1 auto; }
+
+  /* ----------------------------- inputs ----------------------------- */
+  input[type="text"], input[type="number"]{
+    font-family:inherit;
+    font-size:11px;
+    padding:1px 4px;
+    background:var(--white);
+    border:none;
+    box-shadow:
+      inset -1px -1px 0 var(--white),
+      inset  1px  1px 0 var(--black),
+      inset -2px -2px 0 var(--lightgrey),
+      inset  2px  2px 0 var(--darkgrey);
+    width:100px;
+  }
+  input[readonly]{ background:var(--face2); color:#333; }
+  input[disabled]{ background:var(--face2); color:#888; }
+
+  textarea{
+    font-family:"Consolas","Courier New",monospace;
+    font-size:11px;
+    padding:4px 6px;
+    background:var(--white);
+    border:none;
+    box-shadow:
+      inset -1px -1px 0 var(--white),
+      inset  1px  1px 0 var(--black),
+      inset -2px -2px 0 var(--lightgrey),
+      inset  2px  2px 0 var(--darkgrey);
+    width:100%;
+    resize:vertical;
+  }
+
+  /* spinner (subir/bajar) estilo "up-down" de Win32 */
+  .spin{
+    display:inline-flex;
+    flex-direction:column;
+    margin-left:-2px;
+  }
+  .spin button{
+    width:16px; height:11px;
+    font-size:8px;
+    line-height:1;
+    padding:0;
+    background:var(--face);
+    box-shadow:
+      inset -1px -1px 0 var(--black),
+      inset  1px  1px 0 var(--white),
+      inset -2px -2px 0 var(--darkgrey),
+      inset  2px  2px 0 var(--lightgrey);
+      cursor:pointer;
+  }
+  .spin button:active{
+    box-shadow:
+      inset -1px -1px 0 var(--white),
+      inset  1px  1px 0 var(--black),
+      inset -2px -2px 0 var(--lightgrey),
+      inset  2px  2px 0 var(--darkgrey);
+  }
+  .spin button:disabled{ opacity:.4; cursor:default; }
+
+  /* ----------------------------- botones ----------------------------- */
+  button.btn{
+    font-family:inherit;
+    font-size:11px;
+    background:var(--face);
+    padding:4px 11px;
+    cursor:pointer;
+    box-shadow:
+      inset -1px -1px 0 var(--black),
+      inset  1px  1px 0 var(--white),
+      inset -2px -2px 0 var(--darkgrey),
+      inset  2px  2px 0 var(--lightgrey);
+  }
+  button.btn:active,
+  button.btn.pressed{
+    box-shadow:
+      inset -1px -1px 0 var(--white),
+      inset  1px  1px 0 var(--black),
+      inset -2px -2px 0 var(--lightgrey),
+      inset  2px  2px 0 var(--darkgrey);
+  }
+  button.btn:disabled{
+    color:#888;
+    cursor:default;
+  }
+  button.btn.wide{ width:100%; }
+
+  /* STOP en la barra superior: compacto pero destacado y siempre a la vista */
+  button.btn-stop{
+    background:#C02020;
+    color:#fff;
+    font-weight:bold;
+    font-size:12px;
+    padding:2px 22px;
+    letter-spacing:1px;
+    box-shadow:
+      inset -1px -1px 0 #400000,
+      inset  1px  1px 0 #FF8080,
+      inset -2px -2px 0 #800000,
+      inset  2px  2px 0 #E06060;
+  }
+  button.btn-stop:active{
+    box-shadow:
+      inset -1px -1px 0 #FF8080,
+      inset  1px  1px 0 #400000,
+      inset -2px -2px 0 #E06060,
+      inset  2px  2px 0 #800000;
+  }
+
+  button.btn-laser{
+    font-weight:bold;
+  }
+  button.btn-laser.on{
+    background:#FFD400;
+  }
+
+  /* ------------------------------- led ------------------------------- */
+  .led{
+    width:11px; height:11px;
+    border-radius:0; /* cuadrado, no futurista */
+    display:inline-block;
+    box-shadow:
+      inset -1px -1px 0 var(--white),
+      inset  1px  1px 0 var(--black);
+    background:var(--led-off);
+  }
+  .led.on{ background:var(--led-on); }
+  .led.idle{ background:var(--led-idle); }
+
+  .hint{ color:#555; font-size:10px; }
+
+  /* --------------------------- telemetria en vivo --------------------------- */
+  .telebig{
+    font-weight:bold;
+    font-size:14px;
+    font-family:"Consolas","Courier New",monospace;
+    color:#A8285A;
+  }
+
+  /* ---------------------- diagnostico de sensores (grid) ---------------------- */
+  .sensorgrid{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:3px 10px;
+    margin:4px 0 2px 0;
+  }
+  .sensoritem{
+    display:flex;
+    align-items:center;
+    gap:5px;
+    font-size:10px;
+  }
+  @media (max-width: 380px){
+    .sensorgrid{ grid-template-columns:1fr; }
+  }
+
+  /* ---------------------- giro del motor X (botones de prueba) ---------------------- */
+  .turngrid{
+    display:grid;
+    grid-template-columns:repeat(3, 1fr);
+    gap:4px;
+    margin:4px 0 2px 0;
+  }
+  .turngrid .btn{ padding:4px 4px; }
+
+  /* ---------------------- IMUs (lectura en vivo + calibracion) ---------------------- */
+  .imuitem{ margin-bottom:6px; }
+  .imudata{
+    font-family:"Consolas","Courier New",monospace;
+    font-size:10px;
+    margin:0 0 3px 16px;
+    white-space:pre-wrap;
+  }
+
+  /* --------------------------- barra de estado --------------------------- */
+  .statusbar{
+    flex:0 0 auto;
+    display:flex;
+    border-top:1px solid var(--white);
+  }
+  .statusbar .panel{
+    flex:1 1 0;
+    padding:2px 8px;
+    font-size:10px;
+    background:var(--face2);
+    box-shadow:
+      inset  1px  1px 0 var(--darkgrey),
+      inset -1px -1px 0 var(--white);
+    margin:2px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .statusbar .panel.grow{ flex:2 1 0; }
+
+  .checkline{
+    display:flex; align-items:center; gap:6px; margin-bottom:6px;
+  }
+
+  .divider{
+    border-top:1px solid var(--darkgrey);
+    border-bottom:1px solid var(--white);
+    margin:6px 0;
+  }
+
+  /* ------------------------- panel de simulacion ------------------------- */
+  .simwrap{
+    display:flex;
+    gap:12px;
+    align-items:flex-start;
+  }
+  .simcanvas-holder{
+    background:var(--face2);
+    padding:6px;
+    box-shadow:
+      inset  1px  1px 0 var(--darkgrey),
+      inset -1px -1px 0 var(--white);
+    flex:1 1 320px;      /* ocupa el ancho disponible (la hoja es horizontal) sin encogerse al dibujo */
+    max-width:560px;
+    min-width:0;
+  }
+  #simCanvas{
+    max-width:100%;
+    display:block;
+    box-shadow: 1px 1px 0 var(--darkgrey), 2px 2px 0 var(--darkgrey);
+  }
+  .simlegend{
+    font-size:10px;
+    line-height:1.5;
+  }
+  .simlegend .sw{
+    display:inline-block;
+    width:10px; height:10px;
+    margin-right:4px;
+    vertical-align:middle;
+  }
+  #simWarn{
+    color:#A00000;
+    font-weight:bold;
+    margin-top:6px;
+    min-height:14px;
+  }
+
+  .orientrow{
+    display:flex;
+    align-items:center;
+    flex-wrap:wrap;
+    gap:10px;
+    margin-bottom:7px;
+    font-weight:bold;
+  }
+  .orientrow label{
+    font-weight:normal;
+    display:inline-flex;
+    align-items:center;
+    gap:4px;
+  }
+
+  /* ------------------------------ consola ------------------------------ */
+  .console-box{
+    font-family:"Consolas","Courier New",monospace;
+    font-size:10px;
+    background:#0C0C0C;
+    color:#B8F0B8;
+    height:110px;
+    overflow-y:auto;
+    padding:6px 8px;
+    box-shadow:
+      inset -1px -1px 0 var(--white),
+      inset  1px  1px 0 var(--black),
+      inset -2px -2px 0 var(--lightgrey),
+      inset  2px  2px 0 var(--darkgrey);
+  }
+  .console-box div{ white-space:pre-wrap; word-break:break-word; }
+  .console-box .err{ color:#FF8080; }
+  .console-box .gsend{ color:#FFFFFF; font-weight:bold; } /* linea de codigo G enviada */
+  .console-box .gcomment{ color:#7A8A7A; }                /* detalle HTTP, como comentario */
+  .console-box .gresp{ color:#B8F0B8; }                   /* respuesta del equipo */
+
+  /* --------------------- tabla de referencia codigo G --------------------- */
+  .gtable{
+    width:100%;
+    border-collapse:collapse;
+    font-size:10px;
+    margin-bottom:0;
+    background:var(--white);
+  }
+  .gtable th, .gtable td{
+    border:1px solid var(--darkgrey);
+    padding:1px 5px;
+    text-align:left;
+    vertical-align:top;
+  }
+  .gtable th{
+    background:var(--face2);
+    font-weight:bold;
+  }
+  .gtable td:first-child, .gtable td:last-child{
+    font-family:"Consolas","Courier New",monospace;
+    white-space:nowrap;
+  }
+  .gtable-wrap{ overflow-x:auto; }
+
+  /* Bloques de la seccion Calibracion: cada paso es un cuadro plegable con su titulo */
+  details.calblock{
+    margin:0 0 7px 0;
+    border:1px solid var(--darkgrey);
+    background:rgba(255,255,255,.4);
+  }
+  details.calblock > summary{
+    cursor:pointer;
+    font-weight:bold;
+    padding:4px 7px;
+    background:var(--face2);
+    color:#7A4800;
+    user-select:none;
+  }
+  details.calblock[open] > summary{ border-bottom:1px solid var(--darkgrey); }
+  details.calblock > .calbody{ padding:7px 7px 4px 7px; }
+  details.foldable{ margin-top:4px; }
+
+  /* bloques plegables (ahorran altura en pantalla) */
+  details.foldable > summary{
+    cursor:pointer;
+    font-weight:bold;
+    padding:2px 0;
+    outline:none;
+    user-select:none;
+  }
+  details.foldable > summary:hover{ text-decoration:underline; }
+
+  /* =====================================================================
+     RESPONSIVE — se adapta a distintas resoluciones: tablets/ventanas
+     angostas primero, celulares despues con ajustes mas agresivos.
+     ===================================================================== */
+  @media (max-width: 1200px){
+    .content{ grid-template-columns:repeat(2, 1fr); }
+    /* con 2 columnas, la 2a de las 3 .col cae debajo en su propia fila:
+       ya no es la ultima de la fila superior, asi que tambien necesita
+       su separador a la izquierda. */
+    .content .col:nth-child(2){ border-right:2px solid var(--darkgrey); }
+    .content .col:nth-child(3){ padding-left:16px; border-right:none; grid-column:1 / -1; }
+  }
+
+  /* Un fieldset no se encoge por defecto (min-width = su contenido): en celular
+     ensanchaba toda la pagina y la dejaba cortada a la derecha. */
+  fieldset.groupbox{ min-width:0; max-width:100%; }
+  img, canvas, textarea{ max-width:100%; }
+
+  @media (max-width: 820px){
+    /* Tablet y celular: scroll normal de toda la pagina (no dentro de una caja
+       de alto fijo), una sola columna, y la barra con STOP siempre pegada arriba. */
+    html,body{ height:auto; min-height:100%; overflow-x:hidden; overflow-y:auto; }
+    .window{ min-height:100vh; min-height:100dvh; }
+    .content{ grid-template-columns:1fr; overflow:visible; flex:0 0 auto; padding:8px 8px 4px 8px; }
+    .content .col{ border-right:none !important; padding-left:0 !important; padding-right:0 !important; }
+    .content .col:nth-child(3){ grid-column:auto; }
+    .titlebar{ position:sticky; top:0; z-index:50; }
+    .statusbar{ flex-wrap:wrap; }
+    .statusbar .panel{ flex:1 1 45%; white-space:normal; }
+    .statusbar .panel.grow{ flex:1 1 100%; }
+    .credits{ margin-top:auto; }
+  }
+
+  @media (max-width: 680px){
+    html,body{ font-size:13px; }       /* 11px es ilegible en celular */
+    .row label{ width:100%; margin-bottom:2px; }
+    .row input[type="number"], .row input[type="text"]{ width:130px; }
+    .simwrap{ flex-direction:column; }
+    .simcanvas-holder{ width:100%; min-width:0; }
+    #simCanvas{ width:100%; height:auto; }
+    .titlebar .caption{ font-size:12px; line-height:1.2; }
+    .console-box{ height:120px; }
+    .orientrow{ gap:8px; }
+
+    /* objetivos tactiles de unos 40 px y entradas de 16 px (con menos, iOS hace
+       zoom al tocar un campo y descuadra la pagina) */
+    button.btn{ padding:10px 14px; min-height:40px; font-size:13px; }
+    details.calblock > summary{ padding:11px 9px; font-size:14px; }
+    button.btn-stop{ padding:6px 16px; min-height:36px; font-size:14px; }
+    input[type="text"], input[type="number"], textarea{ font-size:16px; padding:6px 6px; }
+    input[type="checkbox"], input[type="radio"]{ width:20px; height:20px; }
+    .spin button{ width:28px; height:20px; font-size:11px; }
+    .hint{ font-size:12px; }
+    .sensoritem{ font-size:12px; }
+    .imudata, .console-box{ font-size:12px; }
+    fieldset.groupbox legend{ font-size:13px; }
+    .checkline{ min-height:28px; }
+
+    /* modal de Codigo G: tablas que se parten en lineas en vez de salirse */
+    .gmodal-backdrop{ padding:8px; }
+    .gmodal{ max-height:94vh; max-height:94dvh; padding:8px; }
+    .gmodal-head{ flex-wrap:wrap; }
+    .gtable{ font-size:12px; }
+    .gtable td:first-child, .gtable td:last-child{ white-space:normal; word-break:break-word; }
+    .credits .cName{ margin:0 5px; white-space:normal; }
+  }
+
+  @media (max-width: 380px){
+    .row input[type="number"], .row input[type="text"]{ width:110px; }
+    .turngrid .btn{ padding:10px 2px; font-size:12px; }
+    button.btn{ padding:10px 8px; }
+    .credits{ font-size:10px; }
+  }
+
+  /* ------------------------------ creditos ------------------------------ */
+  /* Pie plegable: en reposo ocupa una sola linea. */
+  /* Pie institucional: UANL en amarillo (tono oro, legible sobre fondo
+     claro), FIME en verde, y los nombres en negro. */
+  .credits{
+    flex:0 0 auto;
+    background:var(--face2);
+    border-top:2px solid var(--darkgrey);
+    padding:3px 12px;
+    font-size:10px;
+    line-height:1.45;
+    color:#000;
+    text-align:center;
+  }
+  .credits .cTitle{
+    display:block;
+    font-weight:bold;
+    font-size:11px;
+    letter-spacing:.4px;
+    margin-bottom:1px;
+  }
+  .credits .cUanl{
+    color:#C79A00;                 /* amarillo institucional, tono oro */
+    text-shadow:0 0 1px rgba(0,0,0,.35); /* contorno para que resalte */
+  }
+  .credits .cFime{ color:#0E7A35; } /* verde */
+  .credits .cRole{ font-weight:bold; color:#000; }
+  .credits .cName{
+    display:inline-block;
+    font-weight:bold;
+    color:#000;
+    margin:0 9px;
+    white-space:nowrap;
+  }
+  .credits .cId{ font-weight:normal; color:#444; }
+</style>
+</head>
+<body>
+
+<div class="window">
+
+  <div class="titlebar">
+    <span class="caption">Panel de Control — Riel de Precision (ESP32)</span>
+    <!-- El paro de emergencia vive en la barra superior: siempre visible y
+         alcanzable sin importar donde este el operario en la interfaz. -->
+    <button class="btn btn-stop" id="btnStop" title="Paro de emergencia (M112)">■ STOP</button>
+  </div>
+
+  <div class="content">
+
+    <div class="col">
+
+        <fieldset class="groupbox sec-conexion">
+          <legend>Conexion</legend>
+
+          <div class="row">
+            <label for="ipInput">Direccion ESP32:</label>
+            <input type="text" id="ipInput" class="grow" placeholder="192.168.4.1">
+          </div>
+
+          <div class="row" style="margin-top:-2px;">
+            <label>&nbsp;</label>
+            <button class="btn" id="btnConnect" style="min-width:100px;">Conectar</button>
+            <button class="btn" id="btnDisconnect" style="min-width:100px;" disabled>Desconectar</button>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="row">
+            <label>Estado:</label>
+            <span class="led" id="ledConn"></span>
+            <span id="txtConn">Desconectado</span>
+          </div>
+        </fieldset>
+
+        <fieldset class="groupbox sec-calibracion">
+          <legend>Calibracion</legend>
+
+          <details class="calblock" open>
+            <summary>1 · Cero de la maquina (HOME)</summary>
+            <div class="calbody">
+              <div class="row">
+                <button class="btn wide" id="btnHomingCal" title="Rutina de cero: lleva el riel al fin de carrera de referencia (G28)">INICIAR HOMING (G28)</button>
+              </div>
+              <div class="row">
+                <label>Estado:</label>
+                <span class="led" id="ledHoming"></span>
+                <span id="txtHomingState">Sin homing</span>
+              </div>
+              <div class="row">
+                <label>Riel medido:</label>
+                <span id="txtRail">—</span>
+              </div>
+              <div class="hint">HOME de X: va hacia atras hasta tocar el fin de carrera X− (ahi X = 0), avanza hasta tocar el X+ para medir el riel y regresa a 0. <b>Mientras X no tenga referencia no se permite mover.</b> El cero de Y es donde queda el laser: acomodelo a mano antes de hacer HOME.</div>
+            </div>
+          </details>
+
+          <details class="calblock" open>
+            <summary>2 · Angulo del laser (AS5600 y compensacion)</summary>
+            <div class="calbody">
+              <div class="row">
+                <label>Altura laser:</label>
+                <span>15 cm (fija)</span>
+                <input type="hidden" id="laserHeight" value="15">
+              </div>
+
+              <div class="imuitem">
+                <div class="row" style="margin-bottom:1px;">
+                  <span class="led" id="ledEnc"></span>
+                  <b>AS5600</b>
+                  <span id="txtEnc">—</span>
+                </div>
+                <div class="imudata" id="dataEnc">—</div>
+              </div>
+              <div class="row">
+                <button class="btn wide" id="btnEncZero">FIJAR CERO (laser perpendicular)</button>
+              </div>
+
+              <div class="divider"></div>
+
+              <div class="row">
+                <label for="angleOffset">Comp. angular (°):</label>
+                <input type="number" id="angleOffset" step="0.1" value="0">
+              </div>
+              <div class="row">
+                <label for="chkAutoComp">Auto con AS5600:</label>
+                <input type="checkbox" id="chkAutoComp">
+                <span class="hint">al CALIBRAR, calcula la compensacion con el sensor</span>
+              </div>
+              <div class="row">
+                <button class="btn wide" id="btnCalibrate">CALIBRAR / IR A CERO</button>
+              </div>
+              <div class="row">
+                <label>Estado:</label>
+                <span class="led" id="ledCal"></span>
+                <span id="txtCalState">No calibrado</span>
+              </div>
+              <div class="row">
+                <label>Ultima vez:</label>
+                <span id="txtCalTime">—</span>
+              </div>
+
+              <details class="foldable">
+                <summary>Como se usa</summary>
+                <div class="hint">
+                  Con el laser perpendicular a la hoja pulse FIJAR CERO (queda guardado). Despues, con
+                  "Auto con AS5600" activado, CALIBRAR calcula la compensacion angular solo. Si la
+                  etiqueta del sensor no dice IDEAL, ajuste la distancia del iman (~2 mm).
+                </div>
+              </details>
+            </div>
+          </details>
+
+          <details class="calblock" open>
+            <summary>3 · IMUs (nivel de la mesa)</summary>
+            <div class="calbody">
+              <div class="imuitem">
+                <div class="row" style="margin-bottom:1px;">
+                  <span class="led" id="ledImuWhite"></span>
+                  <b>IMU blanco</b>
+                  <span id="txtImuWhite">—</span>
+                </div>
+                <div class="imudata" id="dataImuWhite">—</div>
+                <div class="row"><button class="btn wide" id="btnImuWhite" disabled>CALIBRAR IMU BLANCO</button></div>
+              </div>
+
+              <div class="imuitem">
+                <div class="row" style="margin-bottom:1px;">
+                  <span class="led" id="ledImuBlack"></span>
+                  <b>IMU negro</b>
+                  <span id="txtImuBlack">—</span>
+                </div>
+                <div class="imudata" id="dataImuBlack">—</div>
+                <div class="row"><button class="btn wide" id="btnImuBlack" disabled>CALIBRAR IMU NEGRO</button></div>
+              </div>
+
+              <div class="row">
+                <button class="btn wide" id="btnImuBoth" disabled>CALIBRAR LAS DOS IMUs</button>
+              </div>
+
+              <details class="foldable">
+                <summary>Como se usa</summary>
+                <div class="hint">
+                  Calibre cada IMU sobre una superficie que SEPA que esta nivelada (nivel de burbuja),
+                  con la cara plana hacia arriba (+Z): esa posicion se toma como horizontal. Luego
+                  coloquela sobre la mesa: la inclinacion que muestre es el desnivel de la mesa. No
+                  calibre sobre la mesa a medir, porque borraria su desnivel. Dura ~1 s: no la toque.
+                </div>
+              </details>
+            </div>
+          </details>
+
+          <details class="calblock" open>
+            <summary>4 · Diagnostico de sensores</summary>
+            <div class="calbody">
+              <div class="sensorgrid">
+                <div class="sensoritem"><span class="led" id="ledSensXMin"></span>Fin de carrera X−</div>
+                <div class="sensoritem"><span class="led" id="ledSensXMax"></span>Fin de carrera X+</div>
+                <div class="sensoritem"><span class="led" id="ledSensHome"></span>En cero (tras HOME)</div>
+                <div class="sensoritem"><span class="led" id="ledSensEnc"></span>Encoder angular OK</div>
+              </div>
+              <div class="hint">Se lee en vivo de /status mientras haya conexion.</div>
+            </div>
+          </details>
+
+          <details class="calblock" open>
+            <summary>5 · Finales de carrera (limits)</summary>
+            <div class="calbody">
+              <div class="sensorgrid" style="grid-template-columns:1fr;">
+                <div class="sensoritem"><span class="led" id="ledLcMin"></span><span id="txtLcMin">X− libre</span></div>
+                <div class="sensoritem"><span class="led" id="ledLcMax"></span><span id="txtLcMax">X+ libre</span></div>
+              </div>
+              <div class="row">
+                <label>Estado:</label>
+                <span id="txtLcState">Sin calibrar</span>
+              </div>
+              <div class="row">
+                <button class="btn wide" id="btnLcStart" disabled>CALIBRAR LIMITS (3 muestras)</button>
+              </div>
+              <div class="gtable-wrap">
+                <table class="gtable">
+                  <thead><tr><th>Muestra</th><th>Sentido</th><th>Pasos</th><th>cm</th></tr></thead>
+                  <tbody id="lcRows"><tr><td class="gnote" colspan="4">Sin datos todavia.</td></tr></tbody>
+                </table>
+              </div>
+              <div class="hint" id="lcSummary" style="margin-top:4px;">Pulse el boton: el carro recorrera todo el riel entre los dos finales de carrera.</div>
+              <details class="foldable">
+                <summary>Como se usa</summary>
+                <div class="hint">
+                  El carro va a X−, cruza hasta X+ y regresa, contando los pasos <b>desde que se despega el interruptor del que sale
+                  hasta que se activa el otro</b> (si empieza con un interruptor presionado, solo sale hacia el otro lado). Cada cruce es una muestra; con 3 muestras saca el <b>promedio</b>, toma X− como
+                  X = 0 y se <b>posiciona en medio</b> (la mitad del promedio). El largo medido pasa a ser el maximo de X.
+                  Con el boton STOP o un clic de la perilla se cancela. El carro se detiene solo al tocar cada interruptor.
+                </div>
+              </details>
+            </div>
+          </details>
+
+          <details class="calblock">
+            <summary>6 · Pruebas de banco (giro de los motores)</summary>
+            <div class="calbody">
+              <div class="row" style="margin-bottom:2px;">
+                <label>Motor X:</label>
+              </div>
+              <div class="hint" style="margin-bottom:4px;">
+                Gira el motor del eje X las vueltas del boton: sirve para medir cuanto avanza el carro por vuelta. No usa fines de carrera.
+              </div>
+              <div class="row">
+                <label>Sentido:</label>
+                <input type="radio" name="turnDir" id="turnDirPos" value="pos" checked>
+                <label for="turnDirPos" style="width:auto;font-weight:normal;">+X</label>
+                <input type="radio" name="turnDir" id="turnDirNeg" value="neg">
+                <label for="turnDirNeg" style="width:auto;font-weight:normal;">−X</label>
+              </div>
+              <div class="turngrid">
+                <button class="btn btn-turn" data-revs="0.125" disabled>1/8 vuelta</button>
+                <button class="btn btn-turn" data-revs="0.25" disabled>1/4 vuelta</button>
+                <button class="btn btn-turn" data-revs="0.5" disabled>1/2 vuelta</button>
+                <button class="btn btn-turn" data-revs="1" disabled>Vuelta completa</button>
+                <button class="btn btn-turn" data-revs="2" disabled>2 vueltas</button>
+              </div>
+
+              <div class="divider"></div>
+
+              <div class="row" style="margin-bottom:2px;">
+                <label>Motor Y:</label>
+              </div>
+              <div class="hint" style="margin-bottom:4px;">
+                Mismo ensayo con el motor del eje Y (angulo del laser).
+              </div>
+              <div class="row">
+                <label>Sentido:</label>
+                <input type="radio" name="turnDirY" id="turnDirPosY" value="pos" checked>
+                <label for="turnDirPosY" style="width:auto;font-weight:normal;">+Y</label>
+                <input type="radio" name="turnDirY" id="turnDirNegY" value="neg">
+                <label for="turnDirNegY" style="width:auto;font-weight:normal;">−Y</label>
+              </div>
+              <div class="turngrid">
+                <button class="btn btn-turn" data-axis="y" data-revs="0.125" disabled>1/8 vuelta</button>
+                <button class="btn btn-turn" data-axis="y" data-revs="0.25" disabled>1/4 vuelta</button>
+                <button class="btn btn-turn" data-axis="y" data-revs="0.5" disabled>1/2 vuelta</button>
+                <button class="btn btn-turn" data-axis="y" data-revs="1" disabled>Vuelta completa</button>
+                <button class="btn btn-turn" data-axis="y" data-revs="2" disabled>2 vueltas</button>
+              </div>
+            </div>
+          </details>
+        </fieldset>
+
+
+    </div>
+
+    <div class="col">
+
+        <fieldset class="groupbox sec-posicionamiento">
+          <legend>Control manual (igual que la perilla)</legend>
+
+          <div class="row jogrow">
+            <label>Eje X (mm):</label>
+            <button class="btn jogbtn" data-axis="x" data-dir="-1" data-mult="5" disabled title="5 mm atras">−5</button>
+            <button class="btn jogbtn" data-axis="x" data-dir="-1" data-mult="1" disabled title="1 mm atras">−1</button>
+            <span class="telebig jogval" id="jogXval">0 mm</span>
+            <button class="btn jogbtn" data-axis="x" data-dir="1" data-mult="1" disabled title="1 mm adelante">+1</button>
+            <button class="btn jogbtn" data-axis="x" data-dir="1" data-mult="5" disabled title="5 mm adelante">+5</button>
+          </div>
+          <div class="row jogrow">
+            <label>Eje Y (°):</label>
+            <button class="btn jogbtn" data-axis="y" data-dir="-1" data-mult="5" disabled title="5 pasos del motor">−5</button>
+            <button class="btn jogbtn" data-axis="y" data-dir="-1" data-mult="1" disabled title="1 paso del motor">−1</button>
+            <span class="telebig jogval" id="jogYval">+0.00°</span>
+            <button class="btn jogbtn" data-axis="y" data-dir="1" data-mult="1" disabled title="1 paso del motor">+1</button>
+            <button class="btn jogbtn" data-axis="y" data-dir="1" data-mult="5" disabled title="5 pasos del motor">+5</button>
+          </div>
+          <div class="hint" id="jogHome" hidden style="color:#A00000;font-weight:bold;">Haga HOME primero: hasta que X tenga referencia no se permite mover.</div>
+          <div class="hint">
+            Cada clic mueve en vivo, con los mismos pasos que la perilla: <b>1 mm</b> en X y <b>1 paso del motor</b>
+            (<span id="jogStepTxt">0.70</span>°) en Y; los botones de 5 equivalen al giro rapido. La pantalla del equipo y este panel
+            se actualizan entre si al instante.
+          </div>
+        </fieldset>
+
+        <fieldset class="groupbox sec-posicionamiento">
+          <legend>Posicionamiento (Coordenadas / Triangular)</legend>
+
+          <div class="orientrow">
+            <span>Modo de entrada:</span>
+            <label><input type="radio" name="posMode" id="modeCoord" value="coord" checked> Modo Coordenadas (X, Y)</label>
+            <label><input type="radio" name="posMode" id="modeTri" value="tri"> Modo Triangular (Hipotenusa + Angulo)</label>
+          </div>
+
+          <!-- Modo Coordenadas: X y Y se ingresan directamente, en milimetros. -->
+          <div class="row" id="rowCoordX">
+            <label for="xInputMm">Posicion X (mm):</label>
+            <input type="number" id="xInputMm" step="1" value="0">
+            <span class="spin">
+              <button type="button" data-target="xInputMm" data-step="1">▲</button>
+              <button type="button" data-target="xInputMm" data-step="-1">▼</button>
+            </span>
+            <span class="hint">0 = inicio del riel. Solo limitan los finales de carrera</span>
+          </div>
+          <div class="row" id="rowCoordY">
+            <label for="yInputMm">Posicion Y (mm):</label>
+            <input type="number" id="yInputMm" step="1" min="0" max="2150" value="0">
+            <span class="spin">
+              <button type="button" data-target="yInputMm" data-step="5">▲</button>
+              <button type="button" data-target="yInputMm" data-step="-5">▼</button>
+            </span>
+            <span class="hint">profundidad sobre la hoja</span>
+          </div>
+
+          <!-- Modo Triangular: se ingresa la Hipotenusa (distancia recta al punto,
+               desde el centro del riel) y el Angulo que forma con el eje del riel;
+               X y Y se derivan por trigonometria: X = H·sen(θ), Y = H·cos(θ). -->
+          <div class="row" id="rowTriHip" hidden>
+            <label for="hipInputMm">Hipotenusa H (mm):</label>
+            <input type="number" id="hipInputMm" step="1" min="0" max="400" value="0">
+            <span class="spin">
+              <button type="button" data-target="hipInputMm" data-step="1">▲</button>
+              <button type="button" data-target="hipInputMm" data-step="-1">▼</button>
+            </span>
+            <span class="hint">distancia recta al punto, desde el centro del riel (X = 200 mm)</span>
+          </div>
+          <div class="row" id="rowTriAngle" hidden>
+            <label for="polarAngleInput">Angulo θ (°):</label>
+            <input type="number" id="polarAngleInput" step="0.5" value="0">
+            <span class="spin">
+              <button type="button" data-target="polarAngleInput" data-step="0.5">▲</button>
+              <button type="button" data-target="polarAngleInput" data-step="-0.5">▼</button>
+            </span>
+            <span class="hint">respecto al eje del riel (0° = de frente)</span>
+          </div>
+          <div class="row" id="rowTriCalc" hidden>
+            <label>Punto calculado:</label>
+            <span id="triCalcOut" class="telebig">X=0.0 mm, Y=0.0 mm</span>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="row">
+            <label for="angleInput">Angulo laser (calc.) (°):</label>
+            <input type="number" id="angleInput" step="0.5" value="0" readonly>
+            <span class="hint">calculado: Y = altura × tan(angulo)</span>
+          </div>
+
+          <div class="row">
+            <button class="btn wide" id="btnMove">MOVER A POSICION</button>
+          </div>
+
+          <div class="row">
+            <label>Estado:</label>
+            <span class="led" id="ledMoving"></span>
+            <span id="txtMoving">En posicion</span>
+          </div>
+
+          <!-- Puente interno en cm/grados: todo el resto de la interfaz (codigo G,
+               simulacion, secuencia, API del ESP32) trabaja en estas unidades;
+               los campos visibles de arriba (en mm) se sincronizan con estos. -->
+          <input type="hidden" id="xInput" value="0">
+          <input type="hidden" id="yInput" value="0">
+        </fieldset>
+
+        <fieldset class="groupbox sec-control">
+          <legend>Control</legend>
+
+          <div class="row">
+            <button class="btn" id="btnHome" style="flex:1;">HOME</button>
+            <button class="btn btn-laser" id="btnLaser" style="flex:1;">LASER: APAGADO</button>
+          </div>
+
+          <div class="row">
+            <label>Fin de carrera:</label>
+            <span class="led" id="ledLimit"></span>
+            <span id="txtLimit">Libre</span>
+          </div>
+
+        </fieldset>
+
+        <fieldset class="groupbox sec-telemetria">
+          <legend>Telemetria en Tiempo Real</legend>
+
+          <div class="row">
+            <label>Despl. lineal:</label>
+            <span id="teleX" class="telebig">0.0 mm</span>
+          </div>
+          <div class="row">
+            <label>Despl. angular:</label>
+            <span id="teleAngle" class="telebig">0.0°</span>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="row">
+            <label>Motor lineal:</label>
+            <span id="stepsLinTxt">0</span> pasos
+            <span class="hint">(<span id="revLinTxt">0.00</span> rev)</span>
+          </div>
+          <div class="row">
+            <label>Motor angular:</label>
+            <span id="stepsAngTxt">0</span> pasos
+            <span class="hint">(<span id="revAngTxt">0.00</span> rev)</span>
+          </div>
+          <div class="hint">Contadores acumulados, reportados por el ESP32.</div>
+        </fieldset>
+
+
+    </div>
+
+    <div class="col">
+
+        <fieldset class="groupbox sec-secuencia">
+          <legend>Secuencia de Puntos (barrido automatico)</legend>
+
+      <div class="hint" style="margin-bottom:6px;">
+        Un punto por linea, formato <strong>X,Y</strong> en cm (se convierte a
+        angulo con la altura calibrada). Lineas vacias o que empiecen con # se
+        ignoran. Requiere estar conectado y calibrado.
+      </div>
+
+      <textarea id="seqText" rows="3" placeholder="Ejemplo:&#10;12,5&#10;12,15&#10;20,15&#10;28,15&#10;28,5"></textarea>
+
+      <div class="row" style="margin-top:8px;">
+        <button class="btn" id="btnSeqLoadExample">Cargar ejemplo</button>
+        <button class="btn" id="btnSeqStart">▶ Iniciar</button>
+        <button class="btn" id="btnSeqPause" disabled>⏸ Pausar</button>
+        <button class="btn" id="btnSeqStop" disabled>■ Detener</button>
+      </div>
+
+      <div class="row">
+        <label>Progreso:</label>
+        <span id="seqProgress">detenido</span>
+      </div>
+        </fieldset>
+
+
+    <fieldset class="groupbox sec-simulacion">
+      <legend>Hoja 27.7 × 21.5 cm (horizontal, papel milimetrico), riel centrado</legend>
+
+      <div class="orientrow">
+        <label><input type="checkbox" id="showSweep" checked> Mostrar barrido (historico)</label>
+        <button class="btn" type="button" id="btnClearSweep">Limpiar barrido</button>
+      </div>
+
+      <div class="simwrap">
+        <div class="simcanvas-holder">
+          <canvas id="simCanvas"></canvas>
+        </div>
+        <div class="simlegend">
+          <div><span class="sw" style="background:#1040FF;border:1px solid #000;"></span>Objetivo (a enviar)</div>
+          <div><span class="sw" style="background:#000;border:1px solid #000;"></span>Posicion actual reportada</div>
+          <div><span class="sw" style="background:#A030D0;border:1px solid #000;"></span>Barrido (historico de posiciones)</div>
+          <div><span class="sw" style="background:#C00000;border:1px solid #000;"></span>Centro del riel (X = 20 cm)</div>
+          <div class="hint" style="margin-top:6px;">Hoja: 27.7 × 21.5 cm (horizontal).<br>Y se mide hacia abajo desde el riel.</div>
+          <div id="simWarn"></div>
+        </div>
+      </div>
+    </fieldset>
+
+    </div>
+
+    <section class="bottomrow">
+        <fieldset class="groupbox sec-consola">
+          <legend>Consola (Codigo G)</legend>
+
+          <div class="hint" style="margin-bottom:5px;">
+            Cada accion de los controles se imprime aqui en codigo G. Tambien
+            puede escribirlo directamente abajo: <strong>ambas entradas son validas</strong>.
+          </div>
+
+          <div id="consoleBox" class="console-box"></div>
+
+          <div class="row" style="margin-top:6px;">
+            <input type="text" id="gcodeInput" class="grow" placeholder="Comando G + Enter (ej. G1 X20 Y15)" style="min-width:120px;">
+            <button class="btn" id="btnGcodeSend">Enviar</button>
+            <button class="btn" id="btnClearConsole">Limpiar</button>
+          </div>
+        </fieldset>
+
+        <fieldset class="groupbox sec-gcode">
+          <legend>Referencia de Codigo G</legend>
+
+          <div class="hint" style="margin-bottom:5px;">Lista de comandos G y M aceptados por esta maquina.</div>
+          <button type="button" class="btn wide" id="btnShowGcodeRef">VER TABLA DE COMANDOS</button>
+        </fieldset>
+    </section>
+
+  </div>
+
+  <div class="statusbar">
+    <div class="panel" id="sbConn">Conexion: desconectado</div>
+    <div class="panel" id="sbCal">Calibracion: sin datos</div>
+    <div class="panel grow" id="sbMsg">Listo.</div>
+  </div>
+
+  <!-- Creditos: pie siempre visible. -->
+  <div class="credits">
+    <span class="cTitle"><span class="cUanl">UANL</span> — <span class="cFime">FIME</span> — Ingenieria en Mecatronica · PIA de Diseño de Mecanismo de Precision</span>
+    <span class="cRole">Docente:</span>
+    <span class="cName">Mario Daniel Ramos Cuevas</span>
+    &nbsp;|&nbsp;
+    <span class="cRole">Equipo:</span>
+    <span class="cName">Aldo Jared Herrera Mandujano <span class="cId">1917375</span></span>
+    <span class="cName">Jesus Israel Perez Jalomo <span class="cId">2173806</span></span>
+    <span class="cName">Ian Emilio Rios Flores <span class="cId">2109543</span></span>
+    <span class="cName">Luis Javier Carranza Alejo <span class="cId">1863708</span></span>
+    <span class="cName">Jorge Angel Garcia Alvarado <span class="cId">2068683</span></span>
+  </div>
+
+</div>
+
+<!-- Ventana emergente de la Referencia de Codigo G: flota encima de todo y no
+     empuja el resto del panel, asi la pantalla principal nunca necesita
+     scroll por su culpa. Se abre/cierra con el boton de la columna izquierda. -->
+<div class="gmodal-backdrop" id="gmodalBackdrop" hidden>
+  <div class="gmodal">
+    <div class="gmodal-head">
+      <span>Referencia de Codigo G — comandos aceptados por esta maquina</span>
+      <button type="button" class="btn" id="btnCloseGcodeRef">Cerrar ✕</button>
+    </div>
+
+    <div class="gcols">
+      <table class="gtable">
+        <thead>
+          <tr><th>Comando</th><th>Funcion</th><th>Ejemplo</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>G0 X__</td><td>Desplazamiento rapido del riel (solo eje X)</td><td>G0 X12</td></tr>
+          <tr><td>G1 X__ A__ F__</td><td>Movimiento a X con angulo A (F se ignora: velocidad fija)</td><td>G1 X12 A12.5</td></tr>
+          <tr><td>G1 X__ Y__ F__</td><td>Igual, pero dando Y en cm (el angulo se calcula)</td><td>G1 X20 Y15</td></tr>
+          <tr><td>G4 P__</td><td>Pausa (dwell) en milisegundos</td><td>G4 P500</td></tr>
+          <tr><td>G28</td><td>Retorno a origen (HOME)</td><td>G28</td></tr>
+          <tr><td>G92 A__</td><td>Fijar compensacion angular (la altura del laser es fija: 15 cm)</td><td>G92 A0.5</td></tr>
+        </tbody>
+      </table>
+
+      <table class="gtable">
+        <thead>
+          <tr><th>Comando</th><th>Funcion</th><th>Ejemplo</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>M3</td><td>Encender laser</td><td>M3</td></tr>
+          <tr><td>M5</td><td>Apagar laser</td><td>M5</td></tr>
+          <tr><td>M112</td><td>Paro de emergencia (STOP inmediato)</td><td>M112</td></tr>
+          <tr><td>M114</td><td>Consultar posicion actual del mecanismo</td><td>M114</td></tr>
+          <tr><td>; texto</td><td>Comentario, se ignora al ejecutar</td><td>; inicio de barrido</td></tr>
+          <tr><td class="gnote" colspan="3">X en cm desde el inicio del riel (0 a 40) · A en grados (+/−) · Y en cm sobre la hoja · velocidad fija (F se ignora)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+// Ventana emergente de la Referencia de Codigo G (no forma parte del flujo
+// principal de la interfaz, asi que se maneja aparte, sin tocar `els`).
+(function(){
+  const backdrop = document.getElementById('gmodalBackdrop');
+  const btnShow = document.getElementById('btnShowGcodeRef');
+  const btnClose = document.getElementById('btnCloseGcodeRef');
+  btnShow.addEventListener('click', () => { backdrop.hidden = false; });
+  btnClose.addEventListener('click', () => { backdrop.hidden = true; });
+  backdrop.addEventListener('click', (ev) => { if(ev.target === backdrop) backdrop.hidden = true; });
+  document.addEventListener('keydown', (ev) => { if(ev.key === 'Escape') backdrop.hidden = true; });
+})();
+</script>
+
+<script>
+/* =========================================================================
+   API ESPERADA EN EL FIRMWARE DEL ESP32 (servidor HTTP embebido)
+   -------------------------------------------------------------------------
+   GET  /status
+        -> 200 JSON: {
+             "connected": true,
+             "x": 12.5,
+             "angle": 8.0,
+             "laser": true,
+             "calibrated": true,
+             "lastCalibration": "2026-08-20T10:15:00",
+             "laserHeight": 15.0,
+             "limit": false,         // opcional: true si hay un fin de carrera activo
+             // --- telemetria (todos opcionales; si faltan se conserva el ultimo valor) ---
+             "stepsX": 4200,         // pasos totales acumulados del motor lineal
+             "revsX": 5.25,          // revoluciones acumuladas del motor lineal
+             "stepsAngle": 380,      // pasos totales acumulados del motor angular
+             "revsAngle": 1.08,      // revoluciones acumuladas del motor angular
+             // --- diagnostico de sensores (opcionales, para el panel de Calibracion) ---
+             "limitXMin": false,     // fin de carrera izquierdo (X-) activo
+             "limitXMax": false,     // fin de carrera derecho (X+) activo
+             "homeSensor": false,    // sensor de home/indice detectado (en cero)
+             "angleEncoderOk": true  // encoder/sensor del eje angular sin falla
+           }
+
+   GET  /move?x={cm}&angle={grados}&speed={1-100}
+        -> 200 JSON: { "ok": true } (o { "ok": false, "error": "..." })
+
+   GET  /home
+        -> 200 JSON: { "ok": true }
+
+   GET  /stop
+        -> 200 JSON: { "ok": true }
+
+   GET  /laser?state=on|off
+        -> 200 JSON: { "ok": true, "laser": true }
+
+   GET  /calibrate?offset={grados}   (la altura del laser es fija: 15 cm)
+        -> 200 JSON: { "ok": true, "lastCalibration": "2026-08-20T10:15:00" }
+
+   Todas las respuestas son JSON. Ante cualquier error de red o timeout,
+   la interfaz pasa a estado "Desconectado" automaticamente.
+
+   NOTA sobre "Moviendo...": esta interfaz asume que /status refleja la
+   posicion real (encoder) del equipo. Tras cada /move se sondea /status
+   repetidamente hasta que la posicion reportada coincide con el objetivo,
+   o hasta agotar un tiempo maximo de espera.
+   ========================================================================= */
+
+const els = {
+  ip: document.getElementById('ipInput'),
+  btnConnect: document.getElementById('btnConnect'),
+  btnDisconnect: document.getElementById('btnDisconnect'),
+  ledConn: document.getElementById('ledConn'),
+  txtConn: document.getElementById('txtConn'),
+
+  laserHeight: document.getElementById('laserHeight'),
+  angleOffset: document.getElementById('angleOffset'),
+  btnCalibrate: document.getElementById('btnCalibrate'),
+  btnEncZero: document.getElementById('btnEncZero'),
+  chkAutoComp: document.getElementById('chkAutoComp'),
+  ledCal: document.getElementById('ledCal'),
+  txtCalState: document.getElementById('txtCalState'),
+  txtCalTime: document.getElementById('txtCalTime'),
+
+  btnHomingCal: document.getElementById('btnHomingCal'),
+  ledHoming: document.getElementById('ledHoming'),
+  txtHomingState: document.getElementById('txtHomingState'),
+  ledSensXMin: document.getElementById('ledSensXMin'),
+  ledSensXMax: document.getElementById('ledSensXMax'),
+  ledSensHome: document.getElementById('ledSensHome'),
+  ledSensEnc: document.getElementById('ledSensEnc'),
+  ledImuWhite: document.getElementById('ledImuWhite'),
+  txtImuWhite: document.getElementById('txtImuWhite'),
+  dataImuWhite: document.getElementById('dataImuWhite'),
+  btnImuWhite: document.getElementById('btnImuWhite'),
+  ledImuBlack: document.getElementById('ledImuBlack'),
+  txtImuBlack: document.getElementById('txtImuBlack'),
+  dataImuBlack: document.getElementById('dataImuBlack'),
+  btnImuBlack: document.getElementById('btnImuBlack'),
+  btnImuBoth: document.getElementById('btnImuBoth'),
+  ledEnc: document.getElementById('ledEnc'),
+  txtEnc: document.getElementById('txtEnc'),
+  dataEnc: document.getElementById('dataEnc'),
+
+  // puente interno cm/grados (oculto) usado por el resto de la interfaz
+  xInput: document.getElementById('xInput'),
+  jogXval: document.getElementById('jogXval'),
+  jogYval: document.getElementById('jogYval'),
+  jogStepTxt: document.getElementById('jogStepTxt'),
+  angleInput: document.getElementById('angleInput'),
+  yInput: document.getElementById('yInput'),
+
+  // Modo Coordenadas (mm)
+  modeCoord: document.getElementById('modeCoord'),
+  rowCoordX: document.getElementById('rowCoordX'),
+  rowCoordY: document.getElementById('rowCoordY'),
+  xInputMm: document.getElementById('xInputMm'),
+  yInputMm: document.getElementById('yInputMm'),
+
+  // Modo Triangular (Hipotenusa + Angulo)
+  modeTri: document.getElementById('modeTri'),
+  rowTriHip: document.getElementById('rowTriHip'),
+  rowTriAngle: document.getElementById('rowTriAngle'),
+  rowTriCalc: document.getElementById('rowTriCalc'),
+  hipInputMm: document.getElementById('hipInputMm'),
+  polarAngleInput: document.getElementById('polarAngleInput'),
+  triCalcOut: document.getElementById('triCalcOut'),
+
+  btnMove: document.getElementById('btnMove'),
+  ledMoving: document.getElementById('ledMoving'),
+  txtMoving: document.getElementById('txtMoving'),
+
+  btnHome: document.getElementById('btnHome'),
+  btnLaser: document.getElementById('btnLaser'),
+  btnStop: document.getElementById('btnStop'),
+  ledLimit: document.getElementById('ledLimit'),
+  txtLimit: document.getElementById('txtLimit'),
+
+  teleX: document.getElementById('teleX'),
+  teleAngle: document.getElementById('teleAngle'),
+  stepsLinTxt: document.getElementById('stepsLinTxt'),
+  revLinTxt: document.getElementById('revLinTxt'),
+  stepsAngTxt: document.getElementById('stepsAngTxt'),
+  revAngTxt: document.getElementById('revAngTxt'),
+
+  seqText: document.getElementById('seqText'),
+  btnSeqLoadExample: document.getElementById('btnSeqLoadExample'),
+  btnSeqStart: document.getElementById('btnSeqStart'),
+  btnSeqPause: document.getElementById('btnSeqPause'),
+  btnSeqStop: document.getElementById('btnSeqStop'),
+  seqProgress: document.getElementById('seqProgress'),
+
+  sbConn: document.getElementById('sbConn'),
+  sbCal: document.getElementById('sbCal'),
+  sbMsg: document.getElementById('sbMsg'),
+
+  simCanvas: document.getElementById('simCanvas'),
+  simWarn: document.getElementById('simWarn'),
+  showSweep: document.getElementById('showSweep'),
+  btnClearSweep: document.getElementById('btnClearSweep'),
+
+  consoleBox: document.getElementById('consoleBox'),
+  btnClearConsole: document.getElementById('btnClearConsole'),
+  gcodeInput: document.getElementById('gcodeInput'),
+  btnGcodeSend: document.getElementById('btnGcodeSend'),
+};
+
+// La velocidad es fija en el firmware (la que no pierde pasos, con rampa de arranque). El valor que se
+// manda solo cumple el formato de la peticion: el equipo lo ignora.
+const FIXED_SPEED = 100;
+
+// El eje X va de 0 a 40 cm (0 = inicio del riel, donde esta el final de carrera X-). El angulo si es +/-.
+// La hoja (27.7 cm de ancho) se supone CENTRADA en el riel: su borde izquierdo queda en X = 61.5 mm.
+// Si la hoja se coloca en otro lugar, cambiar SHEET_LEFT_MM. El modo triangular mide desde el centro del riel.
+const RAIL_LEN_MM = 400;
+const RAIL_CENTER_MM = RAIL_LEN_MM / 2;
+const SHEET_LEFT_MM = (RAIL_LEN_MM - 277) / 2;
+
+const state = {
+  connected:false,
+  calibrated:false,
+  lastCalibration:null,
+  laserHeight:15,
+  laserOn:false,
+  moving:false,
+  limit:false,
+  pollTimer:null,
+  actualX:0,        // ultima posicion X reportada por el equipo (cm, desde el inicio del riel)
+  actualAngle:0,    // ultimo angulo reportado (grados)
+  sweep:[],          // historico de posiciones alcanzadas: {x, angle, y}
+  sequence:{ points:[], index:0, running:false, paused:false },
+  // telemetria: contadores acumulados reportados por el ESP32
+  stepsX:0, revsX:0, stepsAngle:0, revsAngle:0,
+  // diagnostico de sensores
+  sensors:{ limitXMin:false, limitXMax:false, homeSensor:false, angleEncoderOk:true },
+};
+
+// Los navegadores de "iniciar sesion en la red" (portal cautivo) pueden bloquear localStorage:
+// en ese caso se usa una copia en memoria para que el panel no se rompa.
+try{ localStorage.getItem('x'); }catch(e){
+  const mem = {};
+  Object.defineProperty(window, 'localStorage', { value: {
+    getItem: k => (k in mem ? mem[k] : null), setItem: (k, v) => { mem[k] = String(v); },
+    removeItem: k => { delete mem[k]; } } });
+}
+
+// ---- persistencia simple entre sesiones (IP, modo, calibracion, etc.) ----
+els.ip.value = localStorage.getItem('esp32_ip') || '192.168.4.1';  // IP fija del punto de acceso del ESP32-S3 (red DMPS3)
+els.ip.addEventListener('change', () => localStorage.setItem('esp32_ip', els.ip.value.trim()));
+
+function loadPrefs(){
+  if(localStorage.getItem('esp32_posMode') === 'tri') els.modeTri.checked = true;
+  const off = localStorage.getItem('esp32_angleOffset');
+  if(off) els.angleOffset.value = off;
+  els.chkAutoComp.checked = localStorage.getItem('esp32_autoComp') === '1';
+}
+loadPrefs();
+
+els.modeCoord.addEventListener('change', () => localStorage.setItem('esp32_posMode', 'coord'));
+els.modeTri.addEventListener('change', () => localStorage.setItem('esp32_posMode', 'tri'));
+els.angleOffset.addEventListener('change', () => localStorage.setItem('esp32_angleOffset', els.angleOffset.value));
+els.chkAutoComp.addEventListener('change', () => localStorage.setItem('esp32_autoComp', els.chkAutoComp.checked ? '1' : '0'));
+
+// ---------------------------------------------------------------------
+// utilidades
+// ---------------------------------------------------------------------
+function baseUrl(){
+  const ip = els.ip.value.trim();
+  return `http://${ip}`;
+}
+
+function setMsg(text){
+  els.sbMsg.textContent = text;
+}
+
+function fmtDate(iso){
+  if(!iso) return '—';
+  try{
+    const d = new Date(iso);
+    return d.toLocaleString();
+  }catch(e){ return iso; }
+}
+
+// ---------------------------------------------------------------------
+// trigonometria compartida (angulo <-> Y), con compensacion angular
+// ---------------------------------------------------------------------
+function getAngleOffset(){
+  const v = parseFloat(els.angleOffset.value);
+  return isNaN(v) ? 0 : v;
+}
+function angleToY(angleDeg, h){
+  return h * Math.tan((angleDeg - getAngleOffset()) * Math.PI / 180);
+}
+function yToAngle(yCm, h){
+  return (Math.atan(yCm / h) * 180 / Math.PI) + getAngleOffset();
+}
+
+// ---------------------------------------------------------------------
+// consola de comandos
+// ---------------------------------------------------------------------
+function logLine(text, cls){
+  const div = document.createElement('div');
+  if(cls) div.className = cls;
+  const t = new Date().toLocaleTimeString();
+  div.textContent = `[${t}] ${text}`;
+  els.consoleBox.appendChild(div);
+  while(els.consoleBox.children.length > 400){
+    els.consoleBox.removeChild(els.consoleBox.firstChild);
+  }
+  els.consoleBox.scrollTop = els.consoleBox.scrollHeight;
+}
+// atajos por tipo de linea
+const logG    = (g)    => logLine('> ' + g, 'gsend');      // codigo G enviado
+const logHttp = (p)    => logLine('  ; ' + p, 'gcomment'); // detalle HTTP (comentario)
+const logResp = (t)    => logLine('< ' + t, 'gresp');      // respuesta del equipo
+const logErr  = (t)    => logLine('! ' + t, 'err');        // error
+
+els.btnClearConsole.addEventListener('click', () => { els.consoleBox.innerHTML = ''; });
+
+// opts.g = linea de codigo G equivalente que se imprime antes de la peticion
+async function apiGet(path, opts){
+  const g = opts && opts.g;
+  if(g){ logG(g); logHttp(path); }
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), 4000);
+  try{
+    const res = await fetch(baseUrl() + path, { signal: controller.signal });
+    clearTimeout(t);
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const r = await res.json();
+    if(g) logResp(r.ok === false ? ('error: ' + (r.error || 'rechazado')) : 'ok');
+    return r;
+  }catch(err){
+    clearTimeout(t);
+    if(g) logErr('fallo de comunicacion: ' + err.message);
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------
+// conexion / polling de estado
+// ---------------------------------------------------------------------
+function applyConnUI(connected){
+  state.connected = connected;
+  els.ledConn.className = 'led' + (connected ? ' on' : '');
+  els.txtConn.textContent = connected ? 'Conectado' : 'Desconectado';
+  els.sbConn.textContent = 'Conexion: ' + (connected ? ('conectado a ' + els.ip.value.trim()) : 'desconectado');
+  els.btnConnect.disabled = connected;
+  els.btnDisconnect.disabled = !connected;
+
+  [els.btnCalibrate, els.btnHome, els.btnLaser, els.btnStop, els.btnSeqStart]
+    .forEach(b => b.disabled = !connected);
+  els.ip.disabled = connected;
+  if(connected) updateImuButtons(); else resetImuUI();
+  document.querySelectorAll('.btn-turn').forEach(b => b.disabled = !connected);
+  refreshJogEnabled();
+  const bLc = document.getElementById('btnLcStart'); if(bLc) bLc.disabled = !connected;
+  updateMoveButtonState();
+}
+
+function applyCalUI(){
+  els.ledCal.className = 'led' + (state.calibrated ? ' on' : '');
+  els.txtCalState.textContent = state.calibrated ? 'Calibrado' : 'No calibrado';
+  els.txtCalTime.textContent = fmtDate(state.lastCalibration);
+  els.sbCal.textContent = 'Calibracion: ' + (state.calibrated
+    ? ('OK — ' + fmtDate(state.lastCalibration))
+    : 'sin datos');
+}
+
+function applyLaserUI(){
+  els.btnLaser.textContent = 'LASER: ' + (state.laserOn ? 'ENCENDIDO' : 'APAGADO');
+  els.btnLaser.classList.toggle('on', state.laserOn);
+}
+
+function applyLimitUI(){
+  els.ledLimit.className = 'led' + (state.limit ? '' : ' on');
+  els.txtLimit.textContent = state.limit ? 'ACTIVADO' : 'Libre';
+}
+
+// ---------------------------------------------------------------------
+// diagnostico en vivo de sensores (panel de Calibracion)
+// ---------------------------------------------------------------------
+function applySensorsUI(){
+  const s = state.sensors;
+  els.ledSensXMin.className = 'led' + (s.limitXMin ? '' : ' on');
+  els.ledSensXMax.className = 'led' + (s.limitXMax ? '' : ' on');
+  els.ledSensHome.className = 'led' + (s.homeSensor ? ' on' : '');
+  els.ledSensEnc.className = 'led' + (s.angleEncoderOk ? ' on' : '');
+}
+
+// ---------------------------------------------------------------------
+// Giro del motor X (prueba de banco): vueltas exactas del eje de salida.
+// ---------------------------------------------------------------------
+const TURN_LABELS = { '0.125':'1/8 de vuelta', '0.25':'1/4 de vuelta', '0.5':'1/2 vuelta',
+                      '1':'1 vuelta completa', '2':'2 vueltas' };
+
+async function doTurn(axis, revs){
+  const A = axis.toUpperCase();
+  const sfx = axis === 'y' ? 'Y' : '';
+  const neg = document.getElementById('turnDirNeg' + sfx).checked;
+  const speed = FIXED_SPEED;
+  const name = (TURN_LABELS[String(revs)] || revs + ' vueltas') + ' en ' + (neg ? '−' : '+') + A;
+  setMsg('Motor ' + A + ': ' + name + '...');
+  logLine('; giro motor ' + A + ': ' + name + ', velocidad ' + speed + '%', 'gcomment');
+  try{
+    const r = await apiGet('/turn?axis=' + axis + '&revs=' + (neg ? -revs : revs) + '&speed=' + speed);
+    if(r.ok === false){
+      setMsg('No se pudo girar: ' + (r.error || 'rechazado'));
+      logErr('giro motor ' + A + ': ' + (r.error || 'rechazado'));
+    }
+  }catch(err){
+    setMsg('Fallo de comunicacion al girar el motor ' + A + '.');
+    logErr('giro motor ' + A + ': fallo de comunicacion: ' + err.message);
+  }
+}
+
+document.querySelectorAll('.btn-turn').forEach(b => {
+  b.addEventListener('click', () => doTurn(b.dataset.axis || 'x', parseFloat(b.dataset.revs)));
+});
+
+// ---------------------------------------------------------------------
+// IMUs (blanca y negra): lectura en vivo y calibracion de nivel.
+// El ESP32 calibra en una sola posicion (IMU quieta, +Z arriba); aqui solo
+// se pide la calibracion y se sigue su avance con /imu/status.
+// ---------------------------------------------------------------------
+const IMU_UI = {
+  white: { led:els.ledImuWhite, txt:els.txtImuWhite, data:els.dataImuWhite, btn:els.btnImuWhite },
+  black: { led:els.ledImuBlack, txt:els.txtImuBlack, data:els.dataImuBlack, btn:els.btnImuBlack },
+};
+let imuList = [];        // ultima lista recibida de /imu/status
+let imuPrevState = {};   // estado anterior por IMU, para avisar al terminar
+let imuTilt = {};        // ultimas inclinaciones [X, Y] por IMU, para promediar
+const IMU_TILT_AVG = 8;  // lecturas promediadas (~4 s a 500 ms por sondeo)
+let imuTimer = null;
+
+function updateImuButtons(){
+  const busy = imuList.some(i => i.state === 'running');
+  const ready = id => { const i = imuList.find(x => x.id === id); return !!i && i.ok; };
+  Object.keys(IMU_UI).forEach(id => {
+    IMU_UI[id].btn.disabled = !state.connected || busy || !ready(id);
+  });
+  els.btnImuBoth.disabled = !state.connected || busy || !(ready('white') && ready('black'));
+}
+
+function resetImuUI(){
+  imuList = [];
+  imuPrevState = {};
+  imuTilt = {};
+  Object.values(IMU_UI).forEach(ui => {
+    ui.led.className = 'led';
+    ui.txt.textContent = '—';
+    ui.data.textContent = '—';
+  });
+  resetEncoderUI();
+  updateImuButtons();
+}
+
+function applyImuUI(list){
+  imuList = list;
+  list.forEach(i => {
+    const ui = IMU_UI[i.id];
+    if(!ui) return;
+    const running = i.state === 'running';
+    const prev = imuPrevState[i.id];
+
+    ui.led.className = 'led' + (!i.ok ? '' : (!running && i.calibrated ? ' on' : ' idle'));
+    if(!i.ok)                    ui.txt.textContent = 'No responde (0x' + i.addr.toString(16) + ')';
+    else if(running)             ui.txt.textContent = 'Calibrando... ' + i.progress + '%';
+    else if(i.state === 'failed') ui.txt.textContent = 'Fallo: ' + i.error;
+    else if(i.calibrated)        ui.txt.textContent = 'Calibrada' + (i.when ? ' — ' + fmtDate(i.when) : '');
+    else                         ui.txt.textContent = 'Sin calibrar';
+
+    // Desnivel: inclinacion de los ejes X e Y respecto a la horizontal, en grados y en
+    // mm por metro. Positivo = ese lado de la IMU queda mas alto. Se promedian las
+    // ultimas lecturas para que el ruido (~0.1°) no haga bailar el numero.
+    if(prev !== i.state) imuTilt[i.id] = [];
+    if(i.ok && i.live && i.state !== 'running'){
+      const deg = r => r * 180 / Math.PI;
+      const buf = imuTilt[i.id] = (imuTilt[i.id] || []).concat([[
+        deg(Math.atan2(i.a[0], Math.hypot(i.a[1], i.a[2]))),
+        deg(Math.atan2(i.a[1], Math.hypot(i.a[0], i.a[2]))),
+      ]]).slice(-IMU_TILT_AVG);
+      const avg = k => buf.reduce((s, t) => s + t[k], 0) / buf.length;
+      const fmt = d => (d >= 0 ? '+' : '') + d.toFixed(2) + '°  (' +
+                       (Math.tan(d * Math.PI / 180) * 1000).toFixed(1) + ' mm/m)';
+      ui.data.textContent = 'Inclinacion X: ' + fmt(avg(0)) + '\nInclinacion Y: ' + fmt(avg(1));
+    } else {
+      ui.data.textContent = '—';
+    }
+
+    // aviso una sola vez al pasar de "calibrando" a terminado
+    if(prev === 'running' && i.state === 'done'){
+      setMsg(i.name + ' calibrada.');
+      logLine('; ' + i.name + ' calibrada (offset ' + i.off.map(v => v.toFixed(1)).join(', ') +
+              ' | sesgo giro ' + i.gbias.map(v => v.toFixed(1)).join(', ') + ' cuentas)', 'gcomment');
+    } else if(prev === 'running' && i.state === 'failed'){
+      setMsg(i.name + ': no se pudo calibrar — ' + i.error);
+      logErr(i.name + ': calibracion fallida — ' + i.error);
+    }
+    imuPrevState[i.id] = i.state;
+  });
+  updateImuButtons();
+}
+
+async function refreshImus(){
+  try{
+    const r = await apiGet('/imu/status');
+    applyImuUI(r.imus || []);
+  }catch(err){
+    // sin conexion: refreshStatus ya lo refleja en el estado de conexion
+  }
+  refreshEncoder();
+}
+
+// ---- encoder magnetico AS5600: angulo real del laser (compensacion angular automatica) ----
+const ENC_ZONE_TXT = {
+  none:'SIN IMAN', weak:'iman MUY DEBIL (acercalo)', strong:'iman MUY FUERTE (alejalo)',
+  too_close:'MUY CERCA (alejalo un poco)', close:'cerca, aceptable',
+  ideal:'IDEAL', far:'lejos, aceptable', too_far:'MUY LEJOS (acercalo un poco)',
+};
+
+function resetEncoderUI(){
+  els.ledEnc.className = 'led';
+  els.txtEnc.textContent = '—';
+  els.dataEnc.textContent = '—';
+}
+
+function applyEncoderUI(e){
+  if(!e.present){
+    els.ledEnc.className = 'led';
+    els.txtEnc.textContent = 'No responde (0x' + e.addr.toString(16) + ')';
+    els.dataEnc.textContent = '—';
+    return;
+  }
+  const ok = e.magnet === 'ok';
+  els.ledEnc.className = 'led' + (ok ? ' on' : ' idle');
+  els.txtEnc.textContent = e.magnet === 'none' ? 'Sin iman'
+                         : e.magnet === 'weak' ? 'Iman muy debil'
+                         : e.magnet === 'strong' ? 'Iman muy fuerte' : 'Iman detectado';
+  els.dataEnc.textContent = e.live
+    ? 'Angulo sensor: ' + e.angle.toFixed(1) + '°\nAGC: ' + e.agc + '   mag: ' + e.mag +
+      '\nDistancia del iman: ' + (ENC_ZONE_TXT[e.zone] || e.zone) +
+      (e.zeroSet ? '\nAngulo real: ' + e.rel.toFixed(2) + '°   comp. sugerida: ' + e.comp.toFixed(2) + '°'
+                 : '\nSin cero fijado: ponga el laser perpendicular y pulse FIJAR CERO')
+    : 'Angulo: —';
+}
+
+els.btnEncZero.addEventListener('click', async () => {
+  setMsg('Fijando el cero del AS5600...');
+  logLine('; AS5600: fijar cero (laser perpendicular a la hoja)', 'gcomment');
+  try{
+    const r = await apiGet('/encoder/zero');
+    setMsg(r.ok ? 'Cero del AS5600 fijado.' : ('No se pudo fijar el cero: ' + (r.error || 'rechazado')));
+    refreshEncoder();
+  }catch(err){
+    setMsg('Error de comunicacion al fijar el cero.');
+  }
+});
+
+async function refreshEncoder(){
+  try{
+    applyEncoderUI(await apiGet('/encoder/status'));
+  }catch(err){
+    // sin conexion: refreshStatus ya lo refleja en el estado de conexion
+  }
+}
+
+async function doImuCalibrate(which){
+  setMsg('Calibrando IMU (' + which + ')... no mueva el equipo.');
+  logLine('; calibrar IMU: ' + which, 'gcomment');
+  try{
+    const r = await apiGet('/imu/calibrate?which=' + which);
+    if(r.ok === false){
+      setMsg('No se pudo calibrar: ' + (r.error || 'rechazado'));
+      logErr('calibrar IMU: ' + (r.error || 'rechazado'));
+      return;
+    }
+    await refreshImus();
+  }catch(err){
+    setMsg('Fallo de comunicacion al calibrar la IMU.');
+    logErr('calibrar IMU: fallo de comunicacion: ' + err.message);
+  }
+}
+
+els.btnImuWhite.addEventListener('click', () => doImuCalibrate('white'));
+els.btnImuBlack.addEventListener('click', () => doImuCalibrate('black'));
+els.btnImuBoth.addEventListener('click',  () => doImuCalibrate('both'));
+
+// ---------------------------------------------------------------------
+// telemetria en tiempo real: desplazamiento actual + contadores de motor
+// ---------------------------------------------------------------------
+function updateTelemetryUI(){
+  els.teleX.textContent = (state.actualX * 10).toFixed(1) + ' mm';
+  els.teleAngle.textContent = state.actualAngle.toFixed(1) + '°';
+  els.stepsLinTxt.textContent = Math.round(state.stepsX);
+  els.revLinTxt.textContent = state.revsX.toFixed(2);
+  els.stepsAngTxt.textContent = Math.round(state.stepsAngle);
+  els.revAngTxt.textContent = state.revsAngle.toFixed(2);
+}
+
+function setMoving(isMoving){
+  state.moving = isMoving;
+  els.ledMoving.className = 'led' + (isMoving ? ' idle' : ' on');
+  els.txtMoving.textContent = isMoving ? 'Moviendo...' : 'En posicion';
+  updateMoveButtonState();
+}
+
+async function refreshStatus(){
+  const wasConnected = state.connected;
+  try{
+    const s = await apiGet('/status');
+    applyConnUI(true);
+    state.calibrated = !!s.calibrated;
+    state.lastCalibration = s.lastCalibration || state.lastCalibration;
+    state.laserOn = !!s.laser;
+    state.limit = !!s.limit || !!s.limitXMin || !!s.limitXMax;
+    // Puede mover: X con referencia (HOME) o modo prueba del equipo (sin finales de carrera).
+    state.xHomed = (s.canMove !== undefined) ? !!s.canMove : !!s.xHomed;
+    const cap = document.querySelector('.titlebar .caption');
+    if(cap){
+      if(!state.capBase) state.capBase = cap.textContent;
+      cap.textContent = state.capBase + (s.testMode ? '  —  MODO PRUEBA (sin finales de carrera)' : '');
+    }
+    const tRail = document.getElementById('txtRail');
+    if(tRail) tRail.textContent = (s.railCm > 0) ? s.railCm.toFixed(1) + ' cm' : '—';
+    refreshJogEnabled();
+    updateMoveButtonState();
+    applyLimitCalUI(s);
+    if(typeof s.laserHeight === 'number') els.laserHeight.value = s.laserHeight;
+    if(els.chkAutoComp.checked && typeof s.angleOffset === 'number' && document.activeElement !== els.angleOffset) els.angleOffset.value = s.angleOffset.toFixed(2);
+    if(typeof s.x === 'number') state.actualX = s.x;
+    if(typeof s.angle === 'number') state.actualAngle = s.angle;
+    // telemetria: contadores de motor (se conserva el ultimo valor si el
+    // equipo no reporta el campo en este sondeo)
+    if(typeof s.stepsX === 'number') state.stepsX = s.stepsX;
+    if(typeof s.revsX === 'number') state.revsX = s.revsX;
+    if(typeof s.stepsAngle === 'number') state.stepsAngle = s.stepsAngle;
+    if(typeof s.revsAngle === 'number') state.revsAngle = s.revsAngle;
+    // diagnostico de sensores
+    state.sensors.limitXMin = !!s.limitXMin;
+    state.sensors.limitXMax = !!s.limitXMax;
+    state.sensors.homeSensor = !!s.homeSensor;
+    state.sensors.angleEncoderOk = (s.angleEncoderOk === undefined) ? true : !!s.angleEncoderOk;
+    // Pantalla y panel trabajan juntos: el equipo guarda un unico objetivo (X en mm, Y en pasos del
+    // motor) y los dos lados lo leen y lo escriben. Aqui se toma cada vez que cambia (perilla, HOME,
+    // STOP u otro cliente), salvo durante un HOME o mientras se escribe en los campos.
+    if(typeof s.seq === 'number'){
+      state.lim = { yStep: s.yStep || 0.703, xMin: s.xMin, xMax: s.xMax, yMin: s.yMin, yMax: s.yMax };
+      state.srvTgt = { x: Math.round(s.tx * 10), y: Math.round(s.ty / state.lim.yStep) };
+      const editing = [els.xInput, els.yInput, els.angleInput, els.xInputMm, els.yInputMm].includes(document.activeElement);
+      const homingNow = !!s.homing;
+      const homingEnded = state.wasHoming && !homingNow;
+      state.wasHoming = homingNow;
+      const changed = state.lastSeq !== undefined && s.seq !== state.lastSeq;
+      const recentJog = (s.src === 'W') && (Date.now() - (state.lastJogAt || 0) < 800);  // no pisar clics seguidos
+      if(!homingNow && (!wasConnected || homingEnded || (changed && !recentJog))){
+        state.tgt = { x: state.srvTgt.x, y: state.srvTgt.y };
+        if(wasConnected && !editing && (changed || homingEnded)){
+          reflectTarget(s.tx, s.ty);
+          state.fieldsStale = false;
+          if(s.src === 'S') setMsg('Movido desde la pantalla del equipo.');
+        }
+      }
+      // Tras los clics manuales, el formulario de Posicionamiento se pone al dia cuando termina la racha
+      // (si no, MOVER A POSICION volveria al valor anterior).
+      if(state.fieldsStale && !recentJog && !editing && !homingNow){
+        reflectTarget(s.tx, s.ty);
+        state.fieldsStale = false;
+      }
+      state.lastSeq = s.seq;
+      updateJogUI();
+    }
+    // Solo se sincronizan los campos de entrada con la posicion real del
+    // equipo justo al conectar (transicion desconectado -> conectado), para
+    // no pisar un valor que el operario este por enviar durante el sondeo.
+    if(!wasConnected){
+      els.xInput.value = state.actualX;
+      els.angleInput.value = state.actualAngle;
+      const h = parseFloat(els.laserHeight.value) || 0;
+      els.yInput.value = angleToY(state.actualAngle, h).toFixed(2);
+      syncPositionFieldsFromCm();
+    }
+    applyCalUI();
+    applyLaserUI();
+    applyLimitUI();
+    applySensorsUI();
+    updateTelemetryUI();
+    drawSim();
+  }catch(err){
+    applyConnUI(false);
+    drawSim();
+  }
+}
+
+// Pone el objetivo del equipo (X en cm, Y en grados del motor) en los campos del formulario de Posicionamiento.
+function reflectTarget(txCm, tyDeg){
+  els.xInput.value = txCm.toFixed(2);
+  els.angleInput.value = tyDeg.toFixed(2);
+  const h0 = parseFloat(els.laserHeight.value) || 0;
+  els.yInput.value = angleToY(tyDeg, h0).toFixed(2);
+  syncPositionFieldsFromCm();
+}
+
+// ---------------------------------------------------------------------
+// Calibracion de los finales de carrera: 3 muestras de pasos entre X- y X+, promedio y al medio
+// ---------------------------------------------------------------------
+function applyLimitCalUI(s){
+  const setLed = (ledId, txtId, name, pressed) => {
+    const l = document.getElementById(ledId), t = document.getElementById(txtId);
+    if(!l || !t) return;
+    l.className = 'led' + (pressed ? '' : ' on');   // verde = libre, rojo = activado
+    t.textContent = name + (pressed ? ' ACTIVADO' : ' libre');
+  };
+  setLed('ledLcMin', 'txtLcMin', 'X−', !!s.limitXMin);
+  setLed('ledLcMax', 'txtLcMax', 'X+', !!s.limitXMax);
+
+  const st = document.getElementById('txtLcState');
+  if(st) st.textContent = s.testing ? ('Calibrando: ' + s.phase) : (s.legs > 0 ? 'Calibracion terminada' : 'Sin calibrar');
+  const b = document.getElementById('btnLcStart');
+  if(b) b.disabled = !state.connected || !!s.testing || !!s.homing;
+
+  if(typeof s.legs === 'number' && (s.legs !== state.lcLegsSeen || !!s.testing !== state.lcTesting)){
+    state.lcLegsSeen = s.legs;
+    state.lcTesting = !!s.testing;
+    fetchLimitLegs();
+  }
+}
+
+async function fetchLimitLegs(){
+  try{
+    const r = await apiGet('/limits/legs');
+    const rows = document.getElementById('lcRows'), sum = document.getElementById('lcSummary');
+    if(!rows || !sum || !r || !Array.isArray(r.legs)) return;
+    const mm = r.mmPerStep || 0.0613;
+    rows.innerHTML = '';
+    if(!r.legs.length){
+      rows.innerHTML = '<tr><td class="gnote" colspan="4">Sin datos todavia.</td></tr>';
+      sum.textContent = 'Pulse el boton: el carro recorrera todo el riel entre los dos finales de carrera.';
+      return;
+    }
+    r.legs.forEach((l, i) => {
+      const tr = document.createElement('tr');
+      [String(i + 1), l.dir > 0 ? 'X− → X+' : 'X+ → X−', String(l.steps), (l.steps * mm / 10).toFixed(2)]
+        .forEach(c => { const td = document.createElement('td'); td.textContent = c; tr.appendChild(td); });
+      rows.appendChild(tr);
+    });
+    if(r.testing){ sum.textContent = 'Midiendo... ' + r.legs.length + ' muestra(s) hasta ahora.'; return; }
+    const steps = r.legs.map(l => l.steps);
+    const fw = r.legs.filter(l => l.dir > 0).map(l => l.steps), bw = r.legs.filter(l => l.dir < 0).map(l => l.steps);
+    const mean = a => a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : null;
+    let txt = 'Promedio de ' + steps.length + ' muestras: ' + r.avg + ' pasos = ' + (r.avg * mm / 10).toFixed(2) + ' cm. ' +
+              'Posicion en medio: ' + r.middle + ' pasos = ' + (r.middle * mm / 10).toFixed(2) + ' cm desde X−.';
+    if(fw.length && bw.length) txt += ' (Hacia X+: ' + mean(fw) + ' · hacia X−: ' + mean(bw) + ' · diferencia entre muestras: ' +
+                                      (Math.max(...steps) - Math.min(...steps)) + ' pasos.)';
+    sum.textContent = txt;
+  }catch(e){ /* sin conexion: el sondeo lo marcara */ }
+}
+
+document.getElementById('btnLcStart').addEventListener('click', async () => {
+  try{
+    const r = await apiGet('/limits/start', { g: '; CALIBRAR LIMITS: 3 muestras X- <-> X+, promedio y al medio' });  // las muestras las fija el equipo (LIMIT_CAL_SAMPLES)
+    if(r && r.ok === false) setMsg('No se pudo iniciar: ' + (r.error || 'rechazado'));
+    else setMsg('Calibrando los finales de carrera...');
+  }catch(e){ setMsg('Sin conexion con el equipo.'); }
+  refreshStatus();
+});
+
+// Los botones manuales y MOVER solo sirven con el equipo conectado y X con referencia.
+function refreshJogEnabled(){
+  const ok = state.connected && state.xHomed;
+  document.querySelectorAll('.jogbtn').forEach(b => b.disabled = !ok);
+  const hh = document.getElementById('jogHome');
+  if(hh) hh.hidden = ok || !state.connected;
+}
+
+function updateJogUI(){
+  const t = state.tgt || { x: 0, y: 0 };
+  const st = (state.lim && state.lim.yStep) || 0.703;
+  const ang = t.y * st;
+  els.jogXval.textContent = (t.x > 0 ? '+' : '') + t.x + ' mm';
+  els.jogYval.textContent = (ang >= 0 ? '+' : '') + ang.toFixed(2) + '°';
+  els.jogStepTxt.textContent = st.toFixed(2);
+}
+
+// Un clic = un paso, igual que un clic de la perilla: 1 mm en X o 1 paso del motor en Y (x5 en rapido).
+async function jog(axis, dir, mult){
+  if(!state.connected || !state.lim) return;
+  const lim = state.lim;
+  const t = state.tgt || state.srvTgt || { x: 0, y: 0 };
+  let x = t.x, y = t.y;
+  if(axis === 'x') x = Math.max(Math.round(lim.xMin * 10), Math.min(Math.round(lim.xMax * 10), x + dir * mult));
+  else y = Math.max(Math.round(lim.yMin / lim.yStep), Math.min(Math.round(lim.yMax / lim.yStep), y + dir * mult));
+  state.tgt = { x, y };            // se actualiza de inmediato para que varios clics seguidos se sumen
+  state.lastJogAt = Date.now();
+  state.fieldsStale = true;
+  updateJogUI();
+  const xcm = x / 10, ang = y * lim.yStep;
+  try{
+    const r = await apiGet('/move?x=' + xcm.toFixed(2) + '&angle=' + ang.toFixed(3) + '&speed=' + FIXED_SPEED,
+                           { g: 'G1 X' + xcm.toFixed(1) + ' A' + ang.toFixed(2) });
+    if(r && r.ok === false){ state.tgt = state.srvTgt ? { ...state.srvTgt } : state.tgt; updateJogUI(); }
+  }catch(e){ /* sin conexion: el sondeo lo marcara */ }
+}
+document.querySelectorAll('.jogbtn').forEach(b => {
+  b.addEventListener('click', () => jog(b.dataset.axis, parseInt(b.dataset.dir, 10), parseInt(b.dataset.mult, 10)));
+});
+
+function startPolling(){
+  stopPolling();
+  state.pollTimer = setInterval(refreshStatus, 400);  // 0.4 s: asi se ve casi en vivo lo que mueve la perilla
+  imuTimer = setInterval(refreshImus, 500);
+  refreshImus();
+}
+function stopPolling(){
+  if(state.pollTimer){ clearInterval(state.pollTimer); state.pollTimer = null; }
+  if(imuTimer){ clearInterval(imuTimer); imuTimer = null; }
+}
+
+els.btnConnect.addEventListener('click', async () => {
+  setMsg('Conectando...');
+  await refreshStatus();
+  if(state.connected){
+    setMsg('Conectado a ' + els.ip.value.trim() + '.');
+    logLine('; conectado a ' + els.ip.value.trim(), 'gcomment');
+    startPolling();
+  } else {
+    setMsg('No se pudo conectar. Verifique la direccion IP y la red.');
+  }
+});
+
+// Si el panel lo sirve el propio ESP32 (http://...), usa su direccion y se conecta solo.
+if(location.protocol === 'http:' && location.host){
+  els.ip.value = location.host;
+  els.btnConnect.click();
+}
+
+els.btnDisconnect.addEventListener('click', () => {
+  stopPolling();
+  applyConnUI(false);
+  setMsg('Desconectado por el operario.');
+  logLine('; desconectado por el operario', 'gcomment');
+  drawSim();
+});
+
+// ---------------------------------------------------------------------
+// modo de entrada de la posicion (Modo Coordenadas / Modo Triangular).
+// En ambos modos, el Angulo laser (motor) SIEMPRE se calcula por
+// trigonometria a partir de Y y la altura calibrada — el operario nunca
+// lo escribe directamente, solo el codigo G lo permite (G1 X.. A..).
+//
+// Puente de unidades: los campos visibles usan milimetros (segun lo
+// pedido); internamente todo el resto de la interfaz (codigo G, API del
+// ESP32, simulacion) sigue trabajando en centimetros/grados a traves de
+// los campos ocultos els.xInput / els.yInput.
+// ---------------------------------------------------------------------
+function currentPosMode(){
+  return els.modeTri.checked ? 'tri' : 'coord';
+}
+
+function applyPosMode(){
+  const isCoord = currentPosMode() === 'coord';
+  els.rowCoordX.hidden = !isCoord;
+  els.rowCoordY.hidden = !isCoord;
+  els.rowTriHip.hidden = isCoord;
+  els.rowTriAngle.hidden = isCoord;
+  els.rowTriCalc.hidden = isCoord;
+  syncPositionFieldsFromCm();
+  updateYEstimate();
+}
+
+// Angulo laser (motor) = siempre calculado a partir de Y (cm) y la altura.
+function updateYEstimate(){
+  const h = parseFloat(els.laserHeight.value);
+  const y = parseFloat(els.yInput.value);
+  if(isNaN(h) || isNaN(y)){ els.angleInput.value = ''; return; }
+  els.angleInput.value = yToAngle(y, h).toFixed(2);
+}
+
+function updateTriCalcOut(xMm, yMm){
+  els.triCalcOut.textContent = `X=${xMm.toFixed(1)} mm, Y=${yMm.toFixed(1)} mm`;
+}
+
+// reescribe los campos visibles (mm) a partir del puente oculto (cm),
+// segun el modo activo — usado al conectar, tras HOME/CALIBRAR, y al
+// cambiar de modo (para no dejar valores inconsistentes en pantalla).
+function syncPositionFieldsFromCm(){
+  const xCm = parseFloat(els.xInput.value) || 0;
+  const yCm = parseFloat(els.yInput.value) || 0;
+  const xMm = xCm * 10, yMm = yCm * 10;
+  if(currentPosMode() === 'coord'){
+    els.xInputMm.value = xMm.toFixed(1);
+    els.yInputMm.value = yMm.toFixed(1);
+  } else {
+    const xRel = xMm - RAIL_CENTER_MM;  // la hipotenusa y el angulo se miden desde el centro del riel
+    const H = Math.sqrt(xRel*xRel + yMm*yMm);
+    const theta = H > 0 ? Math.atan2(xRel, yMm) * 180 / Math.PI : 0;
+    els.hipInputMm.value = H.toFixed(1);
+    els.polarAngleInput.value = theta.toFixed(1);
+    updateTriCalcOut(xMm, yMm);
+  }
+}
+
+// Modo Coordenadas: el operario escribe X,Y (mm) directamente.
+function onCoordMmInput(){
+  const xMm = parseFloat(els.xInputMm.value);
+  const yMm = parseFloat(els.yInputMm.value);
+  if(!isNaN(xMm)) els.xInput.value = (xMm / 10).toFixed(2);
+  if(!isNaN(yMm)) els.yInput.value = (yMm / 10).toFixed(2);
+  updateYEstimate();
+  drawSim();
+}
+
+// Modo Triangular: el operario escribe Hipotenusa (mm) + Angulo (°);
+// X = centro del riel + H·sen(θ), Y = H·cos(θ) — con θ=0° apuntando de frente al centro del riel.
+function onTriInput(){
+  const H = parseFloat(els.hipInputMm.value);
+  const theta = parseFloat(els.polarAngleInput.value);
+  if(isNaN(H) || isNaN(theta)) return;
+  const rad = theta * Math.PI / 180;
+  const xMm = RAIL_CENTER_MM + H * Math.sin(rad);
+  const yMm = H * Math.cos(rad);
+  els.xInput.value = (xMm / 10).toFixed(2);
+  els.yInput.value = (yMm / 10).toFixed(2);
+  updateTriCalcOut(xMm, yMm);
+  updateYEstimate();
+  drawSim();
+}
+
+els.xInputMm.addEventListener('input', onCoordMmInput);
+els.yInputMm.addEventListener('input', onCoordMmInput);
+els.hipInputMm.addEventListener('input', onTriInput);
+els.polarAngleInput.addEventListener('input', onTriInput);
+els.laserHeight.addEventListener('input', () => { updateYEstimate(); drawSim(); });
+els.angleOffset.addEventListener('input', () => { updateYEstimate(); drawSim(); });
+els.modeCoord.addEventListener('change', () => { applyPosMode(); drawSim(); });
+els.modeTri.addEventListener('change', () => { applyPosMode(); drawSim(); });
+applyPosMode();
+
+
+// ---------------------------------------------------------------------
+// vista de la hoja del proyecto (21.5 x 27.7 cm) en papel milimetrico,
+// con la hoja centrada en el riel (X = 20 cm cae en el centro de la hoja).
+// ---------------------------------------------------------------------
+const SHEET_W_MM = 277.0; // hoja del proyecto en horizontal: ancho (lado largo, 27.7 cm, a lo largo del riel)
+const SHEET_H_MM = 215.0; // alto (lado corto, 21.5 cm, hacia donde apunta el laser)
+const SIM_M = { left:32, top:34, right:14, bottom:22 }; // margenes para reglas/riel
+const SIM_CANVAS_MAX_W = 520; // tope en pantallas grandes (la hoja es horizontal: mas ancha)
+
+function sheetDims(){
+  return { w: SHEET_W_MM, h: SHEET_H_MM };
+}
+
+// ¿el punto (xCm, anguloDeg) cae fuera del area fisica de la hoja actual?
+function isTargetOutOfSheet(xCm, angleDeg){
+  const h = parseFloat(els.laserHeight.value) || 0;
+  const yCm = angleToY(angleDeg, h);
+  const sheet = sheetDims();
+  const xmm = xCm*10 - SHEET_LEFT_MM;
+  const ymm = yCm*10;
+  return xmm < 0 || xmm > sheet.w || ymm < 0 || ymm > sheet.h;
+}
+
+function updateMoveButtonState(){
+  const x = parseFloat(els.xInput.value);
+  const angle = parseFloat(els.angleInput.value);
+  const out = !isNaN(x) && !isNaN(angle) && isTargetOutOfSheet(x, angle);
+  const seqRunning = state.sequence.running;
+  els.btnMove.disabled = !state.connected || !state.xHomed || state.moving || seqRunning;  // fuera de la hoja solo avisa (title)
+  els.btnMove.title = !state.xHomed ? 'Haga HOME primero' : (out ? 'El objetivo cae fuera de la hoja' : (seqRunning ? 'Hay una secuencia en ejecucion' : ''));
+}
+
+function simCanvasWidth(){
+  // El canvas se ajusta al ancho real disponible del contenedor (celular
+  // incluido), con un tope para no verse gigante en monitores grandes.
+  const holder = els.simCanvas.parentElement;
+  const avail = holder.clientWidth > 0 ? holder.clientWidth - 12 : SIM_CANVAS_MAX_W;
+  let w = Math.max(180, Math.min(SIM_CANVAS_MAX_W, avail));
+
+  // Ademas se limita por la altura disponible del viewport, para que la
+  // hoja completa quepa en pantalla sin obligar a desplazarse.
+  const sheet = sheetDims();
+  const maxH = Math.max(200, Math.min(430, window.innerHeight * 0.48));
+  const hAtW = SIM_M.top + SIM_M.bottom + (sheet.h * ((w - SIM_M.left - SIM_M.right) / sheet.w));
+  if(hAtW > maxH){
+    const usableH = maxH - SIM_M.top - SIM_M.bottom;
+    w = (usableH / sheet.h) * sheet.w + SIM_M.left + SIM_M.right;
+  }
+  return Math.max(180, Math.floor(w));
+}
+
+function simGeometry(canvasW, sheet){
+  const availW = canvasW - SIM_M.left - SIM_M.right;
+  const scale = availW / sheet.w; // px por mm
+  const sheetPxH = sheet.h * scale;
+  const canvasH = Math.round(SIM_M.top + sheetPxH + SIM_M.bottom);
+  return { scale, availW, sheetPxH, canvasH, originX: SIM_M.left, originY: SIM_M.top };
+}
+
+function drawSim(){
+  const canvas = els.simCanvas;
+  const sheet = sheetDims();
+  const SHEET_W_MM = sheet.w, SHEET_H_MM = sheet.h;
+  const canvasW = simCanvasWidth();
+  const geo = simGeometry(canvasW, sheet);
+  canvas.width = canvasW;
+  canvas.height = geo.canvasH;
+  const ctx = canvas.getContext('2d');
+  const { scale, originX, originY, sheetPxH } = geo;
+  const sheetPxW = SHEET_W_MM * scale;
+  const SIM_CANVAS_W = canvasW;
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // ---- hoja (fondo blanco) ----
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(originX, originY, sheetPxW, sheetPxH);
+
+  // ---- grilla milimetrica ----
+  for(let xmm=0; xmm<=SHEET_W_MM; xmm++){
+    const px = originX + xmm*scale;
+    const is5cm = Math.round(xmm) % 50 === 0;
+    const is1cm = Math.round(xmm) % 10 === 0;
+    const is5mm = Math.round(xmm) % 5 === 0;
+    ctx.strokeStyle = is5cm ? 'rgba(20,90,50,0.85)' : is1cm ? 'rgba(40,110,70,0.55)' : is5mm ? 'rgba(60,140,90,0.35)' : 'rgba(60,140,90,0.15)';
+    ctx.lineWidth = is5cm ? 1.2 : is1cm ? 1 : 0.5;
+    ctx.beginPath();
+    ctx.moveTo(px, originY);
+    ctx.lineTo(px, originY + sheetPxH);
+    ctx.stroke();
+  }
+  for(let ymm=0; ymm<=SHEET_H_MM; ymm++){
+    const py = originY + ymm*scale;
+    const is5cm = Math.round(ymm) % 50 === 0;
+    const is1cm = Math.round(ymm) % 10 === 0;
+    const is5mm = Math.round(ymm) % 5 === 0;
+    ctx.strokeStyle = is5cm ? 'rgba(20,90,50,0.85)' : is1cm ? 'rgba(40,110,70,0.55)' : is5mm ? 'rgba(60,140,90,0.35)' : 'rgba(60,140,90,0.15)';
+    ctx.lineWidth = is5cm ? 1.2 : is1cm ? 1 : 0.5;
+    ctx.beginPath();
+    ctx.moveTo(originX, py);
+    ctx.lineTo(originX + sheetPxW, py);
+    ctx.stroke();
+  }
+
+  // ---- borde de la hoja ----
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(originX, originY, sheetPxW, sheetPxH);
+
+  // ---- linea de centro (X = 20 cm, centro del riel) ----
+  const centerPx = originX + (SHEET_W_MM/2)*scale;
+  ctx.save();
+  ctx.setLineDash([4,3]);
+  ctx.strokeStyle = 'rgba(190,0,0,0.6)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(centerPx, originY);
+  ctx.lineTo(centerPx, originY + sheetPxH);
+  ctx.stroke();
+  ctx.restore();
+
+  // ---- reglas (cm), calculadas segun el tamano real de la hoja actual ----
+  ctx.fillStyle = '#000';
+  ctx.font = '9px Tahoma, sans-serif';
+  ctx.textAlign = 'center';
+  // marcas de X en cm (coordenada del riel, no distancia al borde de la hoja), de 5 en 5 dentro de la hoja
+  for(let xcm = Math.ceil(SHEET_LEFT_MM / 50) * 5; xcm*10 - SHEET_LEFT_MM <= SHEET_W_MM; xcm += 5){
+    const px = originX + (xcm*10 - SHEET_LEFT_MM)*scale;
+    ctx.fillText(String(xcm), px, originY - 20);
+  }
+  ctx.textAlign = 'right';
+  const maxHcm = Math.floor(SHEET_H_MM / 10 / 5) * 5;
+  for(let ycm=0; ycm<=maxHcm; ycm+=5){
+    const py = originY + (ycm*10)*scale;
+    ctx.fillText(String(ycm), originX - 4, py + 3);
+  }
+
+  // ---- barrido: historico de posiciones ya alcanzadas ----
+  if(els.showSweep.checked && state.sweep.length){
+    const toPx = (p) => {
+      const xmm = p.x*10 - SHEET_LEFT_MM;
+      const ymm = p.y*10;
+      return [
+        originX + Math.min(SHEET_W_MM, Math.max(0, xmm))*scale,
+        originY + Math.min(SHEET_H_MM, Math.max(0, ymm))*scale
+      ];
+    };
+    ctx.save();
+    ctx.strokeStyle = 'rgba(160,48,208,0.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    state.sweep.forEach((p, i) => {
+      const [px, py] = toPx(p);
+      if(i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(160,48,208,0.6)';
+    state.sweep.forEach(p => {
+      const [px, py] = toPx(p);
+      ctx.beginPath();
+      ctx.arc(px, py, 2, 0, Math.PI*2);
+      ctx.fill();
+    });
+    ctx.restore();
+  }
+
+  // ---- barra del riel (esquematica, no a escala de la hoja) ----
+  const railY = originY - 14;
+  ctx.fillStyle = '#B0B0B0';
+  ctx.fillRect(originX, railY, sheetPxW + (SIM_CANVAS_W - originX - SIM_M.right - sheetPxW), 6);
+  ctx.strokeStyle = '#606060';
+  ctx.strokeRect(originX, railY, sheetPxW + (SIM_CANVAS_W - originX - SIM_M.right - sheetPxW), 6);
+
+  const railTrackW = SIM_CANVAS_W - SIM_M.right - originX;
+  function railMarkerPx(xCm){
+    // alineado con la hoja: el marcador queda sobre el mismo punto en que se dibuja el laser
+    const px = (xCm*10 - SHEET_LEFT_MM) * scale;
+    return originX + Math.min(railTrackW, Math.max(0, px));
+  }
+
+  // marcador de posicion actual en el riel
+  const actualRailPx = railMarkerPx(state.actualX);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(actualRailPx-2, railY-2, 4, 10);
+
+  // marcador de objetivo (pendiente de enviar) en el riel
+  const targetX = parseFloat(els.xInput.value);
+  if(!isNaN(targetX)){
+    const targetRailPx = railMarkerPx(targetX);
+    ctx.fillStyle = '#1040FF';
+    ctx.beginPath();
+    ctx.moveTo(targetRailPx, railY-3);
+    ctx.lineTo(targetRailPx-4, railY-9);
+    ctx.lineTo(targetRailPx+4, railY-9);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // ---- puntos objetivo / actual sobre la hoja ----
+  function plotPoint(xCm, angleDeg, color, style){
+    const h = parseFloat(els.laserHeight.value) || 0;
+    const yCm = angleToY(angleDeg, h);
+    const xmm = xCm*10 - SHEET_LEFT_MM;
+    const ymm = yCm*10;
+    const outOfSheet = xmm < 0 || xmm > SHEET_W_MM || ymm < 0 || ymm > SHEET_H_MM;
+    const px = originX + Math.min(SHEET_W_MM, Math.max(0, xmm))*scale;
+    const py = originY + Math.min(SHEET_H_MM, Math.max(0, ymm))*scale;
+
+    ctx.save();
+    if(outOfSheet) ctx.globalAlpha = 0.55;
+    if(style === 'cross'){
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(px-6, py); ctx.lineTo(px+6, py);
+      ctx.moveTo(px, py-6); ctx.lineTo(px, py+6);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(px, py, 4, 0, Math.PI*2);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(px, py, 3.5, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+    return outOfSheet;
+  }
+
+  plotPoint(state.actualX, state.actualAngle, '#000', 'dot');
+  let targetOut = false;
+  const targetAngle = parseFloat(els.angleInput.value);
+  if(!isNaN(targetX) && !isNaN(targetAngle)){
+    targetOut = plotPoint(targetX, targetAngle, '#1040FF', 'cross');
+  }
+
+  els.simWarn.textContent = targetOut ? 'El objetivo cae fuera del area de la hoja: MOVER esta bloqueado.' : '';
+  updateMoveButtonState();
+}
+
+function addSweepPoint(xCm, angleDeg){
+  const h = parseFloat(els.laserHeight.value) || 0;
+  state.sweep.push({ x:xCm, angle:angleDeg, y:angleToY(angleDeg, h) });
+  if(state.sweep.length > 500) state.sweep.shift(); // limite para no crecer indefinidamente
+}
+els.btnClearSweep.addEventListener('click', () => {
+  state.sweep = [];
+  drawSim();
+  logLine('; barrido limpiado', 'gcomment');
+});
+els.showSweep.addEventListener('change', drawSim);
+
+drawSim();
+els.xInput.addEventListener('input', drawSim);
+// (el redibujo por cambios de angulo/Y/altura ya lo maneja el bloque de
+// modo de entrada, mas arriba, junto con el recalculo trigonometrico)
+
+// redibuja al cambiar el tamano de la ventana (o al rotar el celular),
+// para que el canvas siga ocupando el ancho disponible del contenedor
+let simResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(simResizeTimer);
+  simResizeTimer = setTimeout(drawSim, 120);
+});
+
+// ---------------------------------------------------------------------
+// spinners (+/-) de X, Angulo e Y
+// ---------------------------------------------------------------------
+document.querySelectorAll('.spin button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const target = document.getElementById(btn.dataset.target);
+    const step = parseFloat(btn.dataset.step);
+    const min = target.min !== '' ? parseFloat(target.min) : -Infinity;
+    const max = target.max !== '' ? parseFloat(target.max) : Infinity;
+    let v = parseFloat(target.value) || 0;
+    v = Math.min(max, Math.max(min, v + step));
+    target.value = v.toFixed(1);
+    target.dispatchEvent(new Event('input'));
+  });
+});
+
+// ---------------------------------------------------------------------
+// Espera a que el equipo confirme que termino el movimiento.
+//
+// Criterio de llegada, en orden de preferencia:
+//   1) /status devuelve "moving": el firmware dice explicitamente cuando
+//      termino. Es el unico criterio fiable en lazo abierto (steppers sin
+//      encoder), porque ahi la posicion reportada es la comandada, no la real.
+//   2) Si no existe "moving", se compara la posicion reportada contra el
+//      objetivo con una tolerancia. Solo es significativo si el equipo mide
+//      su posicion (encoder / finales de carrera).
+// Al terminar se registra el error residual, que es el dato de precision.
+// ---------------------------------------------------------------------
+async function waitForArrival(targetX, targetAngle){
+  const tolerance = 0.15;
+  const maxTries = 20; // ~20 x 300ms = 6s de espera maxima
+  let arrived = false;
+  let usedFlag = false;
+  setMoving(true);
+  for(let i=0; i<maxTries; i++){
+    await new Promise(r => setTimeout(r, 300));
+    try{
+      const s = await apiGet('/status');
+      if(typeof s.x === 'number') state.actualX = s.x;
+      if(typeof s.angle === 'number') state.actualAngle = s.angle;
+      if(typeof s.stepsX === 'number') state.stepsX = s.stepsX;
+      if(typeof s.revsX === 'number') state.revsX = s.revsX;
+      if(typeof s.stepsAngle === 'number') state.stepsAngle = s.stepsAngle;
+      if(typeof s.revsAngle === 'number') state.revsAngle = s.revsAngle;
+      state.limit = !!s.limit || !!s.limitXMin || !!s.limitXMax;
+      state.sensors.limitXMin = !!s.limitXMin;
+      state.sensors.limitXMax = !!s.limitXMax;
+      state.sensors.homeSensor = !!s.homeSensor;
+      state.sensors.angleEncoderOk = (s.angleEncoderOk === undefined) ? true : !!s.angleEncoderOk;
+      applyLimitUI();
+      applySensorsUI();
+      updateTelemetryUI();
+      drawSim();
+      if(state.limit){
+        logErr('Fin de carrera activado durante el movimiento.');
+        break;
+      }
+      if(typeof s.moving === 'boolean'){
+        usedFlag = true;
+        if(!s.moving){ arrived = true; break; }
+      } else {
+        const closeEnough = Math.abs(state.actualX - targetX) <= tolerance &&
+                             Math.abs(state.actualAngle - targetAngle) <= tolerance;
+        if(closeEnough){ arrived = true; break; }
+      }
+    }catch(err){
+      break; // se perdio la conexion durante el movimiento
+    }
+  }
+  setMoving(false);
+
+  // error residual: la medida de precision real del posicionamiento
+  const h = parseFloat(els.laserHeight.value) || 0;
+  const dX = state.actualX - targetX;
+  const dY = angleToY(state.actualAngle, h) - angleToY(targetAngle, h);
+  logLine(`; llegada=${arrived ? 'si' : 'NO (timeout)'}` +
+          `${usedFlag ? ' [flag moving]' : ' [comparacion de posicion]'}` +
+          ` | error dX=${(dX*10).toFixed(1)} mm dY=${(dY*10).toFixed(1)} mm`,
+          arrived ? 'gcomment' : 'err');
+  return arrived;
+}
+
+// ---------------------------------------------------------------------
+// comandos: mover, home, stop, laser, calibrar
+// ---------------------------------------------------------------------
+els.btnMove.addEventListener('click', async () => {
+  const x = parseFloat(els.xInput.value);
+  const angle = parseFloat(els.angleInput.value);
+  const speed = FIXED_SPEED;
+  if(isNaN(x) || isNaN(angle)){
+    setMsg('Ingrese valores validos de X y angulo.');
+    return;
+  }
+  if(isTargetOutOfSheet(x, angle)){
+    setMsg('El objetivo cae fuera de la hoja: movimiento bloqueado.');
+    return;
+  }
+  setMsg(`Enviando movimiento: X=${x} cm, angulo=${angle}°...`);
+  try{
+    const gLine = `G1 X${x.toFixed(2)} A${angle.toFixed(2)} F${speed}` +
+                  `   ; Y=${els.yInput.value} cm`;
+    const r = await apiGet(`/move?x=${x}&angle=${angle}&speed=${speed}`, {g:gLine});
+    if(r.ok){
+      await waitForArrival(x, angle);
+      addSweepPoint(state.actualX, state.actualAngle);
+      setMsg(`Movimiento OK: X=${x} cm, angulo=${angle}° (Y≈${els.yInput.value} cm)`);
+    } else {
+      setMsg('El equipo rechazo el comando.');
+    }
+    drawSim();
+  }catch(err){
+    setMsg('Error de comunicacion al mover.');
+    applyConnUI(false);
+    setMoving(false);
+  }
+});
+
+// Rutina de Homing (G28): comando compartido por el boton rapido de
+// Control y el boton formal del Panel de Calibracion.
+async function doHoming(){
+  setMsg('Enviando HOME...');
+  els.ledHoming.className = 'led idle';
+  els.txtHomingState.textContent = 'En progreso...';
+  try{
+    const r = await apiGet('/home', {g:'G28'});
+    setMsg(r.ok ? 'HOME completado.' : 'El equipo rechazo el comando HOME.');
+    if(r.ok){
+      els.xInput.value = 0; els.angleInput.value = 0; els.yInput.value = 0;
+      state.actualX = 0; state.actualAngle = 0;
+      syncPositionFieldsFromCm();
+      updateYEstimate();
+      updateTelemetryUI();
+      drawSim();
+      els.ledHoming.className = 'led on';
+      els.txtHomingState.textContent = 'Completado: ' + new Date().toLocaleTimeString();
+    } else {
+      els.ledHoming.className = 'led';
+      els.txtHomingState.textContent = 'Rechazado por el equipo';
+    }
+  }catch(err){
+    setMsg('Error de comunicacion al enviar HOME.');
+    els.ledHoming.className = 'led';
+    els.txtHomingState.textContent = 'Fallo de comunicacion';
+    applyConnUI(false);
+  }
+}
+els.btnHome.addEventListener('click', doHoming);
+els.btnHomingCal.addEventListener('click', doHoming);
+
+els.btnStop.addEventListener('click', async () => {
+  setMsg('*** STOP enviado ***');
+  if(state.sequence.running){
+    state.sequence.running = false;
+    state.sequence.paused = false;
+    setSeqButtons(false, false);
+    els.seqProgress.textContent = 'detenido (STOP)';
+    logErr('Secuencia detenida por STOP de emergencia.');
+  }
+  try{
+    await apiGet('/stop', {g:'M112'});
+  }catch(err){
+    applyConnUI(false);
+  }
+  setMoving(false);
+});
+
+els.btnLaser.addEventListener('click', async () => {
+  const next = !state.laserOn;
+  try{
+    const r = await apiGet('/laser?state=' + (next ? 'on' : 'off'), {g: next ? 'M3' : 'M5'});
+    state.laserOn = (r.laser !== undefined) ? r.laser : next;
+    applyLaserUI();
+    setMsg('Laser ' + (state.laserOn ? 'encendido.' : 'apagado.'));
+  }catch(err){
+    setMsg('Error de comunicacion al conmutar el laser.');
+    applyConnUI(false);
+  }
+});
+
+els.btnCalibrate.addEventListener('click', async () => {
+  const h = parseFloat(els.laserHeight.value);
+  const off = getAngleOffset();
+  if(isNaN(h) || h <= 0){
+    setMsg('Ingrese una altura de laser valida antes de calibrar.');
+    return;
+  }
+  setMsg('Calibrando...');
+  try{
+    const auto = els.chkAutoComp.checked;
+    const r = auto ? await apiGet('/calibrate?auto=1', {g:'G92 A(AS5600)'})
+                   : await apiGet(`/calibrate?offset=${off}`, {g:`G92 A${off}`});
+    if(r.ok){
+      if(auto && typeof r.angleOffset === 'number'){
+        els.angleOffset.value = r.angleOffset.toFixed(2);
+        localStorage.setItem('esp32_angleOffset', els.angleOffset.value);
+        logLine('; compensacion angular automatica (AS5600): ' + r.angleOffset.toFixed(2) + '°', 'gcomment');
+      }
+      state.calibrated = true;
+      state.lastCalibration = r.lastCalibration || new Date().toISOString();
+      applyCalUI();
+      els.xInput.value = 0; els.angleInput.value = 0; els.yInput.value = 0;
+      state.actualX = 0; state.actualAngle = 0;
+      syncPositionFieldsFromCm();
+      updateYEstimate();
+      drawSim();
+      setMsg('Calibracion completada.');
+    } else {
+      setMsg('La calibracion fallo.');
+    }
+  }catch(err){
+    setMsg('Error de comunicacion durante la calibracion.');
+    applyConnUI(false);
+  }
+});
+
+// ---------------------------------------------------------------------
+// secuencia de puntos (barrido automatico)
+// ---------------------------------------------------------------------
+function parseSequence(text){
+  return text.split('\n')
+    .map(l => l.trim())
+    .filter(l => l && !l.startsWith('#'))
+    .map(l => {
+      const parts = l.split(',').map(s => parseFloat(s.trim()));
+      return { x: parts[0], y: parts[1] };
+    })
+    .filter(p => !isNaN(p.x) && !isNaN(p.y));
+}
+
+els.btnSeqLoadExample.addEventListener('click', () => {
+  els.seqText.value = '12,5\n12,15\n20,15\n28,15\n28,5\n20,5\n20,15';
+});
+
+function setSeqButtons(running, paused){
+  els.btnSeqStart.textContent = paused ? '▶ Reanudar' : '▶ Iniciar';
+  els.btnSeqPause.disabled = !running || paused;
+  els.btnSeqStop.disabled = !running;
+  updateMoveButtonState();
+}
+
+els.btnSeqStart.addEventListener('click', async () => {
+  if(state.sequence.running && state.sequence.paused){
+    state.sequence.paused = false;
+    setSeqButtons(true, false);
+    logLine('; secuencia reanudada', 'gcomment');
+    runSequenceLoop();
+    return;
+  }
+  if(!state.connected){ setMsg('Debe conectarse antes de iniciar una secuencia.'); return; }
+  const h = parseFloat(els.laserHeight.value);
+  if(isNaN(h) || h <= 0){ setMsg('Calibre la altura del laser antes de iniciar una secuencia.'); return; }
+  const points = parseSequence(els.seqText.value);
+  if(!points.length){ setMsg('La secuencia esta vacia o mal formateada (use X,Y por linea).'); return; }
+  state.sequence = { points, index:0, running:true, paused:false };
+  setSeqButtons(true, false);
+  logLine(`Secuencia iniciada: ${points.length} puntos.`);
+  runSequenceLoop();
+});
+
+els.btnSeqPause.addEventListener('click', () => {
+  state.sequence.paused = true;
+  setSeqButtons(true, true);
+  logLine('; secuencia pausada', 'gcomment');
+});
+
+els.btnSeqStop.addEventListener('click', () => {
+  state.sequence.running = false;
+  state.sequence.paused = false;
+  setSeqButtons(false, false);
+  els.seqProgress.textContent = 'detenido';
+  logLine('; secuencia detenida por el operario', 'gcomment');
+});
+
+async function runSequenceLoop(){
+  const seq = state.sequence;
+  while(seq.running && !seq.paused && seq.index < seq.points.length){
+    const p = seq.points[seq.index];
+    const h = parseFloat(els.laserHeight.value) || 0;
+    const angle = yToAngle(p.y, h);
+    els.seqProgress.textContent = `Punto ${seq.index+1}/${seq.points.length} (X=${p.x}, Y=${p.y})`;
+    if(isTargetOutOfSheet(p.x, angle)){
+      logErr(`Punto ${seq.index+1} fuera de la hoja, se omite (X=${p.x}, Y=${p.y}).`);
+    } else {
+      const speed = FIXED_SPEED;
+      try{
+        const gLine = `G1 X${p.x.toFixed(2)} A${angle.toFixed(2)} F${speed}` +
+                      `   ; punto ${seq.index+1}/${seq.points.length}, Y=${p.y} cm`;
+        const r = await apiGet(`/move?x=${p.x}&angle=${angle.toFixed(2)}&speed=${speed}`, {g:gLine});
+        if(r.ok){
+          await waitForArrival(p.x, angle);
+          addSweepPoint(state.actualX, state.actualAngle);
+          els.xInput.value = p.x; els.angleInput.value = angle.toFixed(2);
+          els.yInput.value = p.y;
+          syncPositionFieldsFromCm();
+          updateYEstimate();
+          drawSim();
+        } else {
+          logErr(`Punto ${seq.index+1} rechazado por el equipo.`);
+        }
+      }catch(err){
+        logErr(`Error de comunicacion en el punto ${seq.index+1}; secuencia detenida.`);
+        seq.running = false;
+        applyConnUI(false);
+        break;
+      }
+    }
+    seq.index++;
+    if(seq.running && !seq.paused) await new Promise(r => setTimeout(r, 300)); // pausa breve entre puntos
+  }
+  if(seq.running && seq.index >= seq.points.length){
+    logLine('; secuencia completada', 'gcomment');
+    els.seqProgress.textContent = `Completado (${seq.points.length}/${seq.points.length})`;
+    seq.running = false;
+  }
+  setSeqButtons(seq.running, seq.paused);
+}
+
+
+// ---------------------------------------------------------------------
+// INTERPRETE DE CODIGO G (segunda via de entrada)
+// Los controles graficos y esta linea de comandos son equivalentes: ambos
+// terminan llamando a los mismos endpoints del ESP32.
+// ---------------------------------------------------------------------
+const gHistory = [];
+let gHistoryIdx = -1;
+
+// extrae el valor numerico de una letra (ej. 'X' en "G1 X-8 A12")
+function gParam(tokens, letter){
+  const tk = tokens.find(t => t[0].toUpperCase() === letter);
+  if(!tk) return null;
+  const v = parseFloat(tk.slice(1));
+  return isNaN(v) ? null : v;
+}
+
+async function executeGcode(raw){
+  const line = raw.trim();
+  if(!line) return;
+
+  // comentario completo
+  if(line.startsWith(';')){ logLine(line, 'gcomment'); return; }
+
+  // separa el comentario en linea del comando
+  const semi = line.indexOf(';');
+  const codePart = (semi >= 0 ? line.slice(0, semi) : line).trim();
+  const tokens = codePart.split(/\s+/).filter(Boolean);
+  if(!tokens.length){ logLine(line, 'gcomment'); return; }
+
+  const cmd = tokens[0].toUpperCase();
+  const speed = FIXED_SPEED;  // F se acepta pero se ignora: la velocidad es fija
+  const h = parseFloat(els.laserHeight.value) || 0;
+
+  // comandos que no requieren conexion
+  if(cmd === 'M114'){
+    logG(line);
+    logResp(`X:${state.actualX.toFixed(2)} A:${state.actualAngle.toFixed(2)} ` +
+            `Y:${angleToY(state.actualAngle, h).toFixed(2)} laser:${state.laserOn?'on':'off'}`);
+    return;
+  }
+
+  if(!state.connected){
+    logG(line);
+    logErr('sin conexion con el equipo');
+    return;
+  }
+
+  try{
+    switch(cmd){
+      case 'G0':
+      case 'G1': {
+        const x = gParam(tokens, 'X') !== null ? gParam(tokens, 'X') : state.actualX;
+        let angle = gParam(tokens, 'A');
+        const y = gParam(tokens, 'Y');
+        if(angle === null && y !== null){
+          if(h <= 0){ logG(line); logErr('altura de laser invalida; no se puede convertir Y a angulo'); return; }
+          angle = yToAngle(y, h);
+        }
+        if(angle === null) angle = state.actualAngle;
+        if(isTargetOutOfSheet(x, angle)){
+          logG(line);
+          logErr('objetivo fuera del area de la hoja; movimiento bloqueado');
+          return;
+        }
+        const r = await apiGet(`/move?x=${x}&angle=${angle.toFixed(2)}&speed=${speed}`, {g:line});
+        if(r.ok){
+          await waitForArrival(x, angle);
+          addSweepPoint(state.actualX, state.actualAngle);
+          els.xInput.value = x.toFixed(2);
+          els.angleInput.value = angle.toFixed(2);
+          syncPositionFieldsFromCm();
+          updateYEstimate();
+          drawSim();
+        }
+        break;
+      }
+      case 'G28': {
+        const r = await apiGet('/home', {g:line});
+        if(r.ok){
+          els.xInput.value = 0; els.angleInput.value = 0; els.yInput.value = 0;
+          state.actualX = 0; state.actualAngle = 0;
+          syncPositionFieldsFromCm();
+          updateYEstimate();
+          drawSim();
+        }
+        break;
+      }
+      case 'G4': {
+        const ms = gParam(tokens, 'P') || 0;
+        logG(line);
+        await new Promise(r => setTimeout(r, ms));
+        logResp(`ok (pausa de ${ms} ms)`);
+        break;
+      }
+      case 'M3': {
+        const r = await apiGet('/laser?state=on', {g:line});
+        state.laserOn = (r.laser !== undefined) ? r.laser : true;
+        applyLaserUI();
+        break;
+      }
+      case 'M5': {
+        const r = await apiGet('/laser?state=off', {g:line});
+        state.laserOn = (r.laser !== undefined) ? r.laser : false;
+        applyLaserUI();
+        break;
+      }
+      case 'M112': {
+        await apiGet('/stop', {g:line});
+        setMoving(false);
+        if(state.sequence.running){
+          state.sequence.running = false;
+          state.sequence.paused = false;
+          setSeqButtons(false, false);
+        }
+        break;
+      }
+      case 'G92': {
+        const z = gParam(tokens, 'Z');
+        const a = gParam(tokens, 'A');
+        if(a !== null) els.angleOffset.value = a;
+        const hh = parseFloat(els.laserHeight.value);
+        const off = getAngleOffset();
+        const r = await apiGet(`/calibrate?offset=${off}`, {g:line});
+        if(r.ok){
+          state.calibrated = true;
+          state.lastCalibration = r.lastCalibration || new Date().toISOString();
+          applyCalUI();
+          updateYEstimate();
+          drawSim();
+        }
+        break;
+      }
+      default:
+        logG(line);
+        logErr(`comando no reconocido: ${cmd}`);
+    }
+  }catch(err){
+    applyConnUI(false);
+  }
+}
+
+async function sendGcodeFromInput(){
+  const line = els.gcodeInput.value;
+  if(!line.trim()) return;
+  gHistory.push(line);
+  gHistoryIdx = gHistory.length;
+  els.gcodeInput.value = '';
+  await executeGcode(line);
+}
+
+els.btnGcodeSend.addEventListener('click', sendGcodeFromInput);
+els.gcodeInput.addEventListener('keydown', (e) => {
+  if(e.key === 'Enter'){ e.preventDefault(); sendGcodeFromInput(); }
+  // historial de comandos con las flechas, como en una terminal
+  else if(e.key === 'ArrowUp'){
+    e.preventDefault();
+    if(gHistoryIdx > 0){ gHistoryIdx--; els.gcodeInput.value = gHistory[gHistoryIdx]; }
+  } else if(e.key === 'ArrowDown'){
+    e.preventDefault();
+    if(gHistoryIdx < gHistory.length - 1){ gHistoryIdx++; els.gcodeInput.value = gHistory[gHistoryIdx]; }
+    else { gHistoryIdx = gHistory.length; els.gcodeInput.value = ''; }
+  }
+});
+
+// estado inicial
+applyConnUI(false);
+applyCalUI();
+applyLaserUI();
+applyLimitUI();
+applySensorsUI();
+updateTelemetryUI();
+setMoving(false);
+setSeqButtons(false, false);
+logLine('; consola lista - escriba un comando G o use los controles de arriba', 'gcomment');
+</script>
+
+</body>
+</html>
