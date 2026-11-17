@@ -98,8 +98,8 @@ constexpr int LIMIT_CAL_SAMPLES = 3;
 constexpr int LIMIT_CAL_MAX_RUNS = 5;
 
 // AREA UTIL: 30 cm a lo largo del riel (X, V de -150 a +150 mm) y 20 cm en el sentido del angulo (Y, H de -100 a +100 mm).
-// El (0, 0) es el CENTRO de la hoja: V = 0 es el centro del riel (lo deja CALIBRAR LIMITS con el promedio de las corridas)
-// y H = 0 es Y = 0 grados (HOME de Y). H positivo a un lado y V positivo arriba (los sentidos salen de la hoja marcada).
+// El (0, 0) es el HOME marcado: V = 0 es el HOME de X (si no se marco otro, el centro del riel que deja CALIBRAR LIMITS)
+// y H = 0 es el HOME de Y (Y = 0 grados). H positivo a un lado y V positivo arriba (los sentidos salen de la hoja marcada).
 // Fuera de esta area MOVER no se mueve; las esquinas marcadas (o los topes) pueden encerrarla mas, nunca ampliarla.
 constexpr float SHEET_W_MM = 200.0f;  // H: ancho del area, lo recorre el motor Y
 constexpr float SHEET_H_MM = 300.0f;  // V: alto del area, lo recorre el motor X

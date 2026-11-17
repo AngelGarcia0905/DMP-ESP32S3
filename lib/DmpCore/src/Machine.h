@@ -198,13 +198,16 @@ class Machine {
   enum class TestState : uint8_t { None, Seek, Leave, Cross, ToMiddle };
 
   bool moveCore(float xCm, float angleDeg, int speedPct, const char** err, char src, bool checkRange);
-  // AREA UTIL (Cfg::SHEET_W_MM x SHEET_H_MM, centrada en el centro del riel y en Y = 0): limita MOVER siempre que el eje
+  // AREA UTIL (Cfg::SHEET_W_MM x SHEET_H_MM, centrada en el HOME de X marcado y en el HOME de Y): limita MOVER siempre que el eje
   // tenga referencia; los topes / la hoja marcada solo pueden encerrarla mas.
   long railForArea() const { return _savedRail > 0 ? _savedRail : _railSteps; }  // largo del riel conocido (0 = ninguno)
   bool areaX() const { return _xHomed && railForArea() > 0; }
   bool areaY() const { return _yZeroed; }
   float areaXLoCm() const;
   float areaXHiCm() const;
+  // ORIGEN de V (V = 0) en pasos desde X-: el HOME de X marcado por el usuario; si nunca se marco, el centro del riel.
+  // CALIBRAR LIMITS deja el HOME de X en el centro del riel, asi que ese es el origen hasta que se marque otro HOME.
+  long originSteps(long rail) const { return _xHomeSet ? _xOff : rail / 2; }
   // Correccion de Y con el AS5600 y re-referencia de X en los finales de carrera (PASOS PERDIDOS).
   void startYTrim();
   void updateYTrim();

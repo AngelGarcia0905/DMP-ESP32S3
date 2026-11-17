@@ -301,12 +301,13 @@ float Machine::topeValue(int i) const {  // X desde el HOME marcado (como se mue
 
 // Limites de MOVER: topes (si estan los 4), si no el rectangulo de los puntos de la hoja, si no libre. min/max se
 // ordenan por si se marcaron al reves. X se devuelve desde el HOME marcado (como se muestra).
-// AREA UTIL en X: el centro del riel +/- la mitad del alto del area (V), en cm desde el HOME de X marcado.
+// AREA UTIL en X: el origen de V (HOME de X marcado, o el centro del riel si no hay) +/- la mitad del alto del area, en cm
+// desde el HOME de X marcado.
 float Machine::areaXLoCm() const {
-  return (SheetMap::centerFromHomeMm(railForArea(), _xOff, Cfg::X_MM_PER_STEP) - Cfg::SHEET_H_MM / 2) / 10.0f;
+  return ((originSteps(railForArea()) - _xOff) * Cfg::X_MM_PER_STEP - Cfg::SHEET_H_MM / 2) / 10.0f;
 }
 float Machine::areaXHiCm() const {
-  return (SheetMap::centerFromHomeMm(railForArea(), _xOff, Cfg::X_MM_PER_STEP) + Cfg::SHEET_H_MM / 2) / 10.0f;
+  return ((originSteps(railForArea()) - _xOff) * Cfg::X_MM_PER_STEP + Cfg::SHEET_H_MM / 2) / 10.0f;
 }
 
 // Los limites de MOVER son la INTERSECCION del area util (siempre, con el eje referenciado) y los topes o la hoja marcada.
@@ -376,7 +377,7 @@ bool Machine::gridStale() const {
   int dirX, sgnY;
   SheetMap::gridDirs(_gx, _gy, nc, nr, &dirX, &sgnY);
   float rx[kMaxPts], ry[kMaxPts];
-  SheetMap::gridResiduals(_gx, _gy, nc, nr, Cfg::SHEET_W_MM / 2, Cfg::SHEET_H_MM / 2, SheetMap::railCenterSteps(rail),
+  SheetMap::gridResiduals(_gx, _gy, nc, nr, Cfg::SHEET_W_MM / 2, Cfg::SHEET_H_MM / 2, originSteps(rail),
                           Cfg::X_MM_PER_STEP, Cfg::Y_DEG_PER_STEP, dirX, sgnY, rx, ry);
   return SheetMap::residTooBig(rx, ry, nc * nr);
 }
@@ -428,9 +429,9 @@ void Machine::setSheetCorner(bool corner) {
 }
 
 // Punto de la hoja (mm, desde el CENTRO del area) -> objetivo de los motores:
-//   V -> motor X (carro): V = 0 es el CENTRO DEL RIEL (el que deja CALIBRAR LIMITS con el promedio de las corridas);
-//        X = V en mm reales, en el sentido de la hoja marcada. No depende del HOME de X marcado.
-//   H -> motor Y (pivote): H = 0 es Y = 0 (HOME de Y); H en mm se convierte con la tabla medida de SheetMap.h.
+//   V -> motor X (carro): V = 0 es el HOME de X que marco el usuario (si no hay, el centro del riel que deja CALIBRAR LIMITS);
+//        X = V en mm reales, en el sentido de la hoja marcada. Marca el HOME ANTES de las esquinas (ver README).
+//   H -> motor Y (pivote): H = 0 es Y = 0 (HOME de Y marcado); H en mm se convierte con la tabla medida de SheetMap.h.
 // AREA UTIL: H de -100 a +100 y V de -150 a +150 mm. Lo que cae fuera del area, de los topes (o de la hoja marcada si no
 // hay topes) o del rectangulo de los puntos marcados se RECHAZA, no se recorta. De la hoja marcada (4, 6 o 9 puntos) solo
 // se usa hacia donde crece cada eje y la CORRECCION de las esquinas (SheetMap.h: residuos).
@@ -448,17 +449,17 @@ bool Machine::moveToSheet(float hMm, float vMm, const char** err, char src) {
   SheetMap::gridDirs(_gx, _gy, nc, nr, &dirX, &sgnY);
   // CORRECCION con las esquinas marcadas: modelo + diferencia (marcado - modelo) repartida por la hoja.
   float rx[kMaxPts], ry[kMaxPts];
-  SheetMap::gridResiduals(_gx, _gy, nc, nr, Cfg::SHEET_W_MM / 2, Cfg::SHEET_H_MM / 2, SheetMap::railCenterSteps(rail),
+  SheetMap::gridResiduals(_gx, _gy, nc, nr, Cfg::SHEET_W_MM / 2, Cfg::SHEET_H_MM / 2, originSteps(rail),
                           Cfg::X_MM_PER_STEP, Cfg::Y_DEG_PER_STEP, dirX, sgnY, rx, ry);
   if (SheetMap::residTooBig(rx, ry, nc * nr)) { *err = "Remarca las esquinas"; return false; }  // era de otra area
   const SheetMap::Resid res = SheetMap::residAt(rx, ry, nc, nr, hMm, vMm, Cfg::SHEET_W_MM / 2, Cfg::SHEET_H_MM / 2);
   const SheetMap::Target t = SheetMap::correctedTarget(hMm, vMm, dirX, sgnY, res);  // X en mm desde el centro del riel
-  const float cOff = SheetMap::centerFromHomeMm(rail, _xOff, Cfg::X_MM_PER_STEP);  // centro del riel visto desde el HOME de X
+  const float cOff = (originSteps(rail) - _xOff) * Cfg::X_MM_PER_STEP;  // origen de V visto desde el HOME de X (0 si es el HOME)
   bad = SheetMap::checkRange(t, xMinCm() * 10.0f - cOff, xMaxCm() * 10.0f - cOff, yMinDeg(), yMaxDeg(),
                              Cfg::X_MM_PER_STEP / 2.0f, Cfg::Y_DEG_PER_STEP * 0.5f);
   if (bad) { *err = bad; return false; }
   // Tambien dentro de la hoja marcada, aunque los topes sean mas anchos (el rectangulo que encierran sus puntos).
-  const float c0 = (float)SheetMap::railCenterSteps(rail);
+  const float c0 = (float)originSteps(rail);
   bad = SheetMap::checkRange(t, (gridMin(_gx) - c0) * Cfg::X_MM_PER_STEP, (gridMax(_gx) - c0) * Cfg::X_MM_PER_STEP,
                              gridMin(_gy) * Cfg::Y_DEG_PER_STEP, gridMax(_gy) * Cfg::Y_DEG_PER_STEP, Cfg::X_MM_PER_STEP / 2.0f,
                              Cfg::Y_DEG_PER_STEP * 0.5f, "V fuera de la hoja", "H fuera de la hoja");
