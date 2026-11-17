@@ -70,7 +70,6 @@ void Machine::loadSettings() {
     const float xmm = p.getFloat("xmm", 0.0f), ydg = p.getFloat("ydg", 0.0f);
     if (xmm > 0.0001f && xmm < 0.05f) Cfg::X_MM_PER_STEP = xmm;
     if (ydg > 0.001f && ydg < 0.5f) Cfg::Y_DEG_PER_STEP = ydg;
-    _sheetCorner = p.getBool("sorg", false);
     p.end();
   }
 #endif
@@ -365,37 +364,24 @@ void Machine::saveGrid() {
 #endif
 }
 
-void Machine::setSheetCorner(bool corner) {
-  _sheetCorner = corner;
-#ifdef ARDUINO_ARCH_ESP32
-  Preferences p;
-  if (p.begin("dmp", false)) {
-    p.putBool("sorg", corner);
-    p.end();
-  }
-#endif
-}
-
-// Punto de la hoja (mm, centro = 0, arriba positivo) -> objetivo de los motores. Fuera de la hoja se recorta a la orilla.
-//   V -> motor X (carro): X = centro de la hoja + V, en mm reales (el centro sale de las filas marcadas).
-//   H -> motor Y (pivote): H en mm se convierte con la tabla medida de SheetMap.h (angulo contra mm reales).
-// De la rejilla marcada solo se usan el centro y el sentido de cada eje (hacia donde crece V en X y H en Y), asi se
-// conservan el cero y los signos de siempre. El cero de Y (HOME Y) es el laser perpendicular a la hoja = H 0.
+// Punto de la hoja (mm) -> objetivo de los motores. H y V se miden desde los HOME marcados (CALIBRAR > HOME):
+//   V -> motor X (carro): V = 0 es el HOME de X; X = V en mm reales, en el sentido de la hoja marcada.
+//   H -> motor Y (pivote): H = 0 es el HOME de Y; H en mm se convierte con la tabla medida de SheetMap.h.
+// Con H = 0 y V = 0 los ejes van exactamente al HOME, este donde este (no al centro del riel ni de la hoja). De la hoja
+// marcada (4, 6 o 9 puntos) solo se usa hacia donde crece cada eje. Lo que cae fuera de los limites de MOVER (topes, o
+// los puntos de la hoja si no hay topes) se RECHAZA, no se recorta.
 bool Machine::moveToSheet(float hMm, float vMm, const char** err, char src) {
   if (!_gN) { *err = "Hoja sin calibrar"; return false; }
   if (!_xHomed) { *err = "Calibra X primero"; return false; }
   if (!_yZeroed) { *err = "Y sin referencia"; return false; }
-  const int nc = gridCols(_gN), nr = gridRows(_gN);
-  const float h = constrain(hMm, -Cfg::SHEET_W_MM / 2, Cfg::SHEET_W_MM / 2);
-  const float v = constrain(vMm, -Cfg::SHEET_H_MM / 2, Cfg::SHEET_H_MM / 2);
-  auto rowAvg = [&](const long* a, int r) { float s = 0; for (int c = 0; c < nc; c++) s += a[r * nc + c]; return s / nc; };
-  auto colAvg = [&](const long* a, int c) { float s = 0; for (int r = 0; r < nr; r++) s += a[r * nc + c]; return s / nr; };
-  const float xTop = rowAvg(_gx, 0), xBot = rowAvg(_gx, nr - 1);
-  const float xCenSteps = (nr == 3) ? rowAvg(_gx, 1) : (xTop + xBot) / 2;  // con 9 puntos, la fila del centro
-  const int dirX = (xTop >= xBot) ? 1 : -1;                                 // V positivo (arriba) = mas o menos pasos de X
-  const int sgnY = (colAvg(_gy, nc - 1) >= colAvg(_gy, 0)) ? 1 : -1;        // H positivo (derecha) = angulo + o -
-  const float xMm = SheetMap::vToXmm(v, (xCenSteps - _xOff) * Cfg::X_MM_PER_STEP, dirX);
-  return moveCore(xMm / 10.0f, sgnY * SheetMap::hToYdeg(h), 100, err, src, true);
+  if (isnan(hMm) || isnan(vMm)) { *err = "H o V invalido"; return false; }
+  int dirX, sgnY;
+  SheetMap::gridDirs(_gx, _gy, gridCols(_gN), gridRows(_gN), &dirX, &sgnY);
+  const SheetMap::Target t = SheetMap::hvFromHome(hMm, vMm, dirX, sgnY);
+  const char* bad = SheetMap::checkRange(t, xMinCm() * 10.0f, xMaxCm() * 10.0f, yMinDeg(), yMaxDeg(),
+                                         Cfg::X_MM_PER_STEP / 2.0f, Cfg::Y_DEG_PER_STEP * 0.5f);
+  if (bad) { *err = bad; return false; }
+  return moveCore(t.xMm / 10.0f, t.yDeg, 100, err, src, true);
 }
 
 // ---- HOME marcado (CALIBRAR > HOME) ----
@@ -507,7 +493,7 @@ bool Machine::moveCore(float xCm, float angleDeg, int speedPct, const char** err
 
   (void)speedPct;  // la velocidad es la de cada eje (CALIBRAR > VELOCIDAD); el porcentaje se ignora
   _error = "";
-  _x.moveTo(lroundf(xCm * 10.0f / Cfg::X_MM_PER_STEP) + _xOff);  // X se cuenta desde el HOME marcado
+  _x.moveTo(SheetMap::xStepsFromHome(xCm * 10.0f, Cfg::X_MM_PER_STEP, _xOff));  // X se cuenta desde el HOME marcado
   _y.moveTo(lroundf(Cfg::ANGLE_SIGN * angleDeg / Cfg::Y_DEG_PER_STEP));
   _src = src;
   _seq = _seq + 1;

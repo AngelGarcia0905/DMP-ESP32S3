@@ -2,10 +2,11 @@
 #include <math.h>
 
 // Conversion H / V de la hoja (mm) -> ejes. Funciones puras (sin Arduino) para poder probarlas en la PC.
-//   V -> motor X (carro): el desplazamiento de X en mm es igual a V en mm.
+//   V -> motor X (carro): el desplazamiento de X en mm es igual a V en mm, medido desde el HOME de X.
 //   H -> motor Y (pivote del laser): H se escribe en mm y se convierte en el angulo que necesita Y.
 // La tabla de H es la MEDIDA en la maquina: angulo que calcula el equipo contra desplazamiento horizontal real.
-// H = 0 es Y = 0 grados (laser perpendicular). El lado negativo es el espejo del positivo.
+// H = 0 es el HOME de Y marcado (Y = 0 grados) y V = 0 es el HOME de X marcado: el HOME es el origen, no el centro de
+// la hoja ni del riel. El lado negativo de H es el espejo del positivo.
 namespace SheetMap {
 
 constexpr int kN = 16;
@@ -36,7 +37,33 @@ inline float hToYdeg(float hMm) {
 // true si H cae fuera de la tabla medida (se esta extrapolando).
 inline bool hExtrapolated(float hMm) { return fabsf(hMm) > kMaxTableMm; }
 
-// X (mm, desde el HOME de X) para un V (mm): el centro de la hoja mas V en el sentido dir (+1 / -1).
-inline float vToXmm(float vMm, float xCenterMm, int dir) { return xCenterMm + dir * vMm; }
+// X (mm, desde el HOME de X) para un V (mm): V se mide desde el HOME de X marcado (V = 0) en el sentido dir (+1 / -1).
+inline float vToXmm(float vMm, int dir) { return dir * vMm; }
+
+// Objetivo de los ejes para un H / V de la hoja. Ambos se miden desde los HOME marcados: HOME X = V 0 y HOME Y = H 0.
+struct Target { float xMm; float yDeg; };  // X en mm desde el HOME de X, Y en grados desde el HOME de Y
+inline Target hvFromHome(float hMm, float vMm, int dirX, int sgnY) { return {vToXmm(vMm, dirX), sgnY * hToYdeg(hMm)}; }
+
+// Sentido de cada eje segun la hoja marcada (filas de arriba hacia abajo, columnas de izquierda a derecha):
+// dirX = +1 si V positivo (arriba) lleva a mas pasos de X; sgnY = +1 si H positivo (derecha) lleva a angulo positivo.
+// Solo importa hacia donde crece cada eje: donde esta el centro o el HOME no cuenta.
+inline void gridDirs(const long* gx, const long* gy, int nc, int nr, int* dirX, int* sgnY) {
+  float xTop = 0, xBot = 0, yL = 0, yR = 0;
+  for (int c = 0; c < nc; c++) { xTop += gx[c]; xBot += gx[(nr - 1) * nc + c]; }
+  for (int r = 0; r < nr; r++) { yL += gy[r * nc]; yR += gy[r * nc + nc - 1]; }
+  *dirX = (xTop / nc >= xBot / nc) ? 1 : -1;
+  *sgnY = (yR / nr >= yL / nr) ? 1 : -1;
+}
+
+// Pasos absolutos de X (desde el final de carrera X-) para X mm medidos desde el HOME de X marcado (xOff pasos).
+inline long xStepsFromHome(float xMm, float mmPerStep, long xOff) { return lroundf(xMm / mmPerStep) + xOff; }
+
+// Revisa el objetivo contra los limites de MOVER (en las mismas unidades de HOME). nullptr = dentro; si no, el mensaje.
+inline const char* checkRange(const Target& t, float xMinMm, float xMaxMm, float yMinDeg, float yMaxDeg, float halfStepMm,
+                              float halfStepDeg) {
+  if (t.xMm < xMinMm - halfStepMm || t.xMm > xMaxMm + halfStepMm) return "V fuera de limites";
+  if (t.yDeg < yMinDeg - halfStepDeg || t.yDeg > yMaxDeg + halfStepDeg) return "H fuera de limites";
+  return nullptr;
+}
 
 }  // namespace SheetMap

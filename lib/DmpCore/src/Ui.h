@@ -97,7 +97,7 @@ class Ui {
   int _stepSize = 1;        // modo PASOS: pasos por clic lento (1, 10 o 100)
   int _mmMult = 1;          // modo MM/GRD: 1 = 1 mm y 0.25 grados por clic; 10 = diez veces eso
   long _tgtXs = 0;       // objetivo de X en pasos desde el HOME marcado (modo PASOS)
-  int _ajSel = 0;        // en AJUSTES: 0 = VELOCIDAD, 1 = MEDIR Y ESCALA, 2 = ORIGEN HOJA, 3 = REGRESAR
+  int _ajSel = 0;        // en AJUSTES: 0 = VELOCIDAD, 1 = MEDIR Y ESCALA, 2 = REGRESAR
   int _gSel = 0, _gSlot = 0;  // en PUNTOS: fila (0 PUNTO n, 1 GUARDAR, 2 IR, 3 BORRAR, 4 REGRESAR) y punto elegido (0..7)
   int _escSel = 0;       // en ESCALA: 0 X, 1 Y, 2 MARCAR INICIO, 3 REAL Y, 4 APLICAR Y, 5 FABRICA, 6 REGRESAR
   float _realY = 0;      // grados de Y medidos de verdad, escritos con la perilla

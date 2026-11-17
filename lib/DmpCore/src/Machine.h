@@ -65,9 +65,9 @@ class Machine {
   // Rejilla de 4 (2x2: esquinas), 6 (3x2: esquinas + centro arriba y abajo) o 9 puntos (3x3: esquinas, centros de los
   // lados y centro). Se marcan en orden: fila de arriba de izquierda a derecha, luego la de en medio y la de abajo.
   // Izquierda = X-, derecha = X+; arriba = angulo negativo. Cada punto guarda X en pasos (X- = 0) y Y en pasos del angulo
-  // mostrado. Sirve como MAPA: moveToSheet() va a un punto de la hoja en mm, interpolando entre los puntos marcados
-  // (bilineal por celda). Ya NO limita el movimiento (los ejes se mueven a cualquier parte). Hoja de SHEET_W_MM x
-  // SHEET_H_MM con (0, 0) en el centro, arriba positivo.
+  // mostrado. Sirve como MAPA: moveToSheet() va a un punto de la hoja en mm (SheetMap.h). Ya NO limita el movimiento por
+  // si sola. H y V se miden desde los HOME marcados (HOME X = V 0, HOME Y = H 0); la hoja marcada solo da el sentido de
+  // cada eje. Lo que cae fuera de los limites de MOVER se rechaza.
   static int gridCols(int n) { return n == 4 ? 2 : 3; }
   static int gridRows(int n) { return n == 9 ? 3 : 2; }
   static const char* pointName(int n, int i);                 // "SUP IZQ", "CENTRO", ...
@@ -77,10 +77,6 @@ class Machine {
   void commitGrid();                        // termina: la rejilla marcada pasa a ser la vigente y se guarda en la flash
   int gridPoints() const { return _gN; }    // puntos de la calibracion vigente (0 = hoja sin calibrar)
   bool moveToSheet(float hMm, float vMm, const char** err, char src = 'S');
-  // Origen de H/V que se MUESTRA (AJUSTES > ORIGEN HOJA): false = centro de la hoja, true = esquina inferior izquierda.
-  // Solo cambia los numeros de la pantalla; moveToSheet siempre recibe centro = 0. Se guarda en la flash ("sorg").
-  bool sheetCorner() const { return _sheetCorner; }
-  void setSheetCorner(bool corner);
   // Igual que moveTo (ya no hay limites de rango); se usa al marcar los puntos y en MEDIR AVANCE.
   bool jogTo(float xCm, float angleDeg, const char** err, char src = 'S');
   // Pone el contador de Y en el angulo que da el AS5600 (grados, mismo signo que la pantalla). Se usa al encender.
@@ -275,7 +271,6 @@ class Machine {
   static constexpr int kMaxPts = 9;
   long _gx[kMaxPts] = {}, _gy[kMaxPts] = {};  // calibracion vigente
   uint8_t _gN = 0;                             // 0 = sin calibrar
-  bool _sheetCorner = false;                   // origen mostrado de la hoja: false centro, true esquina inferior izquierda
   long _px[kMaxPts] = {}, _py[kMaxPts] = {};  // la que se esta marcando
   uint8_t _pN = 0;
 
