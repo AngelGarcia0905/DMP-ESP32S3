@@ -11,6 +11,7 @@
 #include "As5600.h"
 #include "Imu.h"
 #include "Machine.h"
+#include "SheetMap.h"
 #include "Net.h"
 #include "dmp_config.h"
 #include "dmp_pins.h"
@@ -61,10 +62,11 @@ constexpr uint16_t C_VIOLET = rgb(180, 120, 255);  // PUNTOS = puntos guardados 
 constexpr int MENU_N = 6;
 const char* const kMenu[MENU_N] = {"MOVER", "GUARDADOS", "CALIBRAR", "AJUSTES", "SENSORES", "RED"};
 const uint16_t kMenuColor[MENU_N] = {C_GREEN, C_VIOLET, C_ORANGE, C_YELLOW, C_PINK, C_BLUE};
-constexpr int CAL_N = 5;
+constexpr int CAL_N = 6;
 const char* const kCal[CAL_N] = {"CALIBRAR LAS 2 IMUs", "HOME (MARCAR)", "CALIBRAR LIMITS", "HOJA (4/6/9 PUNTOS)",
-                                 "TOPES MIN / MAX"};
+                                 "TOPES MIN / MAX", "AFINAR (PRUEBAS)"};
 constexpr int SENS_ROWS = 12;  // renglones visibles en SENSORES (la lista se recorre con la perilla)
+constexpr float LEVEL_TOL_DEG = 0.3f;  // NIVEL: dentro de esta inclinacion (grados) en los dos ejes se considera nivelado
 constexpr int H_STEP_MM = 1, H_FAST_MULT = 5;  // H / V de la hoja: 1 mm por clic, 5 mm girando rapido
 
 inline float yDegOf(int steps) { return steps * Cfg::Y_DEG_PER_STEP; }
@@ -173,6 +175,20 @@ void Ui::update() {
 
   pollButton();
   syncFromMachine();
+  if (millis() - _tiltFeed >= 100) {  // la inclinacion de las IMUs va a la Machine (correccion de IR)
+    _tiltFeed = millis();
+    float px, py, dx, dy;
+    const int n = levelInfo(&px, &py, &dx, &dy);
+    _m.setTilt(px, py, n);
+  }
+  if (_afPend) {  // AFINAR: termino el primer movimiento (el que pasa de largo): ahora el que llega al punto
+    if (_screen != AFINAR) _afPend = false;
+    else if (!_m.moving()) {
+      _afPend = false;
+      const char* e = "";
+      if (_m.moveToSheet(_afH2, _afV2, &e, 'S')) say("Llegando: mide"); else say(e);
+    }
+  }
 
   const uint32_t now = millis();
   if (_msgUntil && (int32_t)(now - _msgUntil) >= 0) { _msgUntil = 0; _dirty = true; }
@@ -262,6 +278,12 @@ void Ui::onTurn(int d, bool fast) {
     _menuSel = ((_menuSel + d) % MENU_N + MENU_N) % MENU_N;
   } else if (_screen == CALIBRAR) {
     _calSel = ((_calSel + d) % (CAL_N + 1) + CAL_N + 1) % (CAL_N + 1);  // IMUs, HOME, LIMITS, HOJA, TOPES, REGRESAR
+  } else if (_screen == AFINAR) {
+    if (!_afIn) _afTest = ((_afTest + d) % 10 + 10) % 10;  // NIVEL, LIMITS, HOME, ESCALA X, HOLGURA Y/X, INCL H/V, ESQUINAS, REGRESAR
+    else if (_editing && _afSel == 2) {
+      if (_afTest == 3) _afReal = constrain(_afReal + d * (fast ? 1.0f : 0.1f), 150.0f, 250.0f);
+      else _afReal = constrain(_afReal + d * (fast ? 1.0f : 0.1f), -30.0f, 30.0f);
+    } else _afSel = ((_afSel + d) % 5 + 5) % 5;  // IR 1, IR 2, valor medido, APLICAR, ATRAS
   } else if (_screen == AJUSTES) {
     _ajSel = ((_ajSel + d) % 4 + 4) % 4;    // VELOCIDAD, MEDIR Y ESCALA, ORIGEN HOJA, REGRESAR
   } else if (_screen == GUARDADOS) {
@@ -499,6 +521,7 @@ void Ui::onClick() {
       case 2: _screen = LIMITS; _limSel = 0; _editing = false; break;  // finales de carrera: corridas y escala de X
       case 3: _screen = PUNTOS; _ptsSel = 0; _editing = false; break;  // HOJA: marcar 4, 6 o 9 puntos
       case 4: _screen = MINMAX; _mmSel = 0; _editing = false; adoptTarget(); break;  // topes de MOVER
+      case 5: _screen = AFINAR; _afTest = 0; _afIn = false; _afPend = false; _editing = false; break;  // pruebas guiadas
       default: _screen = MENU; break;  // REGRESAR
     }
   } else if (_screen == AJUSTES) {
@@ -608,6 +631,11 @@ void Ui::onClick() {
       _screen = CALIBRAR;
       _editing = false;
     }
+  } else if (_screen == NIVEL) {
+    _screen = AFINAR;  // un clic regresa a la lista
+    _afIn = false;
+  } else if (_screen == AFINAR) {
+    afinarClick();
   } else if (_screen == HOME) {
     if (_homeSel <= 2) runHome(_homeSel);  // HOME X / HOME Y / AMBOS
     else _screen = MENU;                   // REGRESAR
@@ -652,6 +680,8 @@ uint16_t Ui::accent() const {
     case CALIBRAR:
     case MINMAX:
     case HMARK:
+    case AFINAR:
+    case NIVEL:
     case LIMITS:
     case PUNTOS:
     case MARCAR:
@@ -929,6 +959,29 @@ void Ui::drawSensores() {
   row("Y sensor", _m.yTrimBlocked() ? "AL REVES" : (_enc.live() && _enc.hasZero() ? "corrige" : "sin sensor"),
       _m.yTrimBlocked() ? C_RED : (_enc.live() && _enc.hasZero() ? C_GREEN : GREY));
 
+  title("AFINAR");  // lo que dejaron las pruebas de CALIBRAR > AFINAR (tambien sale en el monitor serie al arrancar)
+  snprintf(v, sizeof(v), "%.7f", Cfg::X_MM_PER_STEP);                  row("Escala X", v, WHITE);
+  snprintf(v, sizeof(v), "%d", Cfg::X_BACKLASH_STEPS);                 row("Holg. X", v, WHITE);
+  snprintf(v, sizeof(v), "%d", Cfg::Y_BACKLASH_STEPS);                 row("Holg. Y", v, WHITE);
+  snprintf(v, sizeof(v), "%.1f mm", _m.afinarValue(0));                row("Esc.X ult", v, (_m.afinarDone() & 1) ? C_GREEN : GREY);
+  snprintf(v, sizeof(v), "%+.1f mm", _m.afinarValue(1));               row("DifY ult", v, (_m.afinarDone() & 2) ? C_GREEN : GREY);
+  snprintf(v, sizeof(v), "%+.1f mm", _m.afinarValue(2));               row("DifX ult", v, (_m.afinarDone() & 4) ? C_GREEN : GREY);
+
+  {  // inclinacion: referencia (al marcar la hoja), ganancias aprendidas y lo que se esta corrigiendo ahora
+    float cH, cV;
+    const bool act = _m.tiltCorr(&cH, &cV);
+    if (_m.tiltRefOk()) snprintf(v, sizeof(v), "%+.1f %+.1f", _m.tiltRefX(), _m.tiltRefY()); else snprintf(v, sizeof(v), "sin ref");
+    row("Incl ref", v, _m.tiltRefOk() ? WHITE : GREY);
+    if (_m.tiltGainOk(0)) snprintf(v, sizeof(v), "%+.2f", _m.tiltGain(0)); else snprintf(v, sizeof(v), "--");
+    row("Gan H", v, _m.tiltGainOk(0) ? C_GREEN : GREY);
+    if (_m.tiltGainOk(1)) snprintf(v, sizeof(v), "%+.2f", _m.tiltGain(1)); else snprintf(v, sizeof(v), "--");
+    row("Gan V", v, _m.tiltGainOk(1) ? C_GREEN : GREY);
+    snprintf(v, sizeof(v), "%+.1f mm", cH);
+    row("Comp H", v, act ? WHITE : GREY);
+    snprintf(v, sizeof(v), "%+.1f mm", cV);
+    row("Comp V", v, act ? WHITE : GREY);
+  }
+
   title("LASER");
   row("Estado", _m.laser() ? "ENCENDIDO" : "apagado", _m.laser() ? C_RED : GREY);
 
@@ -1030,7 +1083,7 @@ void Ui::drawRed() {
 
 void Ui::drawCalibrar() {
   header("CALIBRAR");
-  for (int i = 0; i < CAL_N; i++) button(17 + i * 19, 17, kCal[i], i == _calSel);
+  for (int i = 0; i < CAL_N; i++) button(16 + i * 16, 14, kCal[i], i == _calSel);
 
   // Abajo, dos renglones (el detalle completo esta en SENSORES).
   _cv->setTextSize(1);
@@ -1396,6 +1449,265 @@ void Ui::drawMarcar() {
   drawBackTab(_markSel == 4);
 }
 
+// ---- AFINAR: pruebas guiadas que corrigen escala de X y holgura de X y Y --------------------------------------------
+// El equipo lleva el laser a puntos conocidos, TU mides en la hoja con regla y escribes lo medido con la perilla; el equipo
+// calcula el ajuste y lo guarda en la flash.
+//   ESCALA X : va a V -100 y V +100 (200 mm pedidos, sin la correccion de las esquinas). Se escribe la distancia REAL entre las
+//              dos marcas; mm por paso nuevo = mm por paso actual x real / 200.
+//   HOLGURA  : llega al mismo punto (H 50 o V 50) desde un lado y desde el otro. DIF = marca llegando desde + menos marca llegando
+//              desde - (en mm, con signo, en el sentido en que crece H o V). Si el juego de los engranes no esta bien compensado,
+//              cada llegada queda corrida la mitad de la DIF hacia donde venia: holgura nueva = actual + DIF/2 en pasos.
+void Ui::afinarGo(float h, float v, float h2, float v2) {
+  const char* err = "";
+  if (!_m.moveToSheet(h, v, &err, 'S')) { say(err); return; }
+  _afH2 = h2;
+  _afV2 = v2;
+  _afPend = true;
+  say("Yendo al lado...");
+}
+
+void Ui::afinarClick() {
+  const char* err = "";
+  const int k = _afTest - 3;  // prueba guiada 0 = ESCALA X, 1 = HOLGURA Y, 2 = HOLGURA X (el resto de la lista abre otra pantalla)
+  if (!_afIn) {
+    switch (_afTest) {
+      case 0: _screen = NIVEL; return;                                                        // nivel con las IMUs
+      case 1: _screen = LIMITS; _limSel = 0; _editing = false; return;                       // riel y centro
+      case 2: _screen = HMARK; _hmSel = 0; _editing = false; adoptTarget(); return;           // HOME de X y Y
+      case 8: _screen = PUNTOS; _ptsSel = 0; _editing = false; return;                        // esquinas
+      case 9: _screen = CALIBRAR; return;
+      default: break;
+    }
+    _afIn = true;
+    _afSel = 0;
+    _editing = false;
+    _afPend = false;
+    _afReal = (k == 0) ? 200.0f : 0.0f;
+    _afT0ok = _afT1ok = false;
+    return;
+  }
+  if (_afSel == 4) { _afIn = false; _editing = false; _afPend = false; return; }
+  if (_afSel == 2) { _editing = !_editing; return; }
+  _editing = false;
+  if (_afSel == 3) {  // APLICAR
+    if (k >= 3) {  // INCLINACION: ganancia = salto del punto (mm) / cambio de inclinacion del eje del chip que mas cambio
+      if (!_afT0ok || !_afT1ok) { say("Marca inicio y fin"); return; }
+      const float d0 = _afT1x - _afT0x, d1 = _afT1y - _afT0y;
+      const int ax = fabsf(d0) >= fabsf(d1) ? 0 : 1;
+      const float dd = ax == 0 ? d0 : d1;
+      if (fabsf(dd) < 0.5f) { say("Inclina mas (0.5 grd)"); return; }
+      if (fabsf(_afReal) < 0.2f) { say("Escribe el salto"); return; }
+      const int other = (k == 3) ? 1 : 0;  // la otra direccion debe usar el otro eje del chip
+      if (_m.tiltGainOk(other) && _m.tiltAxis(other) == ax) { say("Inclina en otra direccion"); return; }
+      if (_m.setTiltGain(k - 3, ax, _afReal / dd)) {
+        _m.afinarSave(k, _afReal);
+        say("Ganancia guardada");
+        _afReal = 0;
+        _afT0ok = _afT1ok = false;
+      } else {
+        say("Valor fuera de rango");
+      }
+    } else if (k == 0) {
+      if (_afReal < 150.0f || _afReal > 250.0f) { say("Valor fuera de rango"); return; }
+      if (_m.setScales(Cfg::X_MM_PER_STEP * _afReal / 200.0f, 0)) {
+        _m.afinarSave(0, _afReal);
+        say("Escala X guardada");
+        _afReal = 200.0f;
+      } else {
+        say("Valor fuera de rango");
+      }
+    } else {
+      long add;
+      if (k == 1) {  // mm de H a grados de Y (pendiente de la tabla cerca de H 50) y a pasos
+        const float degPerMm = (SheetMap::hToYdeg(55.0f) - SheetMap::hToYdeg(45.0f)) / 10.0f;
+        add = lroundf(_afReal / 2.0f * degPerMm / Cfg::Y_DEG_PER_STEP);
+      } else {
+        add = lroundf(_afReal / 2.0f / Cfg::X_MM_PER_STEP);
+      }
+      const int nx = Cfg::X_BACKLASH_STEPS + (k == 2 ? (int)add : 0);
+      const int ny = Cfg::Y_BACKLASH_STEPS + (k == 1 ? (int)add : 0);
+      char b[26];
+      if (_m.setBacklash(nx, ny)) {
+        _m.afinarSave(k, _afReal);
+        snprintf(b, sizeof(b), "Holgura %c = %d pasos", k == 1 ? 'Y' : 'X', k == 1 ? ny : nx);
+        say(b);
+        _afReal = 0;
+      } else {
+        say("Valor fuera de rango");
+      }
+    }
+    return;
+  }
+  if (k >= 3) {  // INCLINACION: MARCAR INICIO / MARCAR FIN guardan la inclinacion de las IMUs de ese momento
+    float px, py, dx, dy;
+    if (levelInfo(&px, &py, &dx, &dy) == 0) { say("Sin IMU"); return; }
+    if (_afSel == 0) { _afT0x = px; _afT0y = py; _afT0ok = true; _afT1ok = false; say("Inicio marcado"); }
+    else if (!_afT0ok) say("Marca el inicio primero");
+    else { _afT1x = px; _afT1y = py; _afT1ok = true; say("Fin marcado"); }
+    return;
+  }
+  // IR 1 / IR 2
+  if (k == 0) {
+    const float v = (_afSel == 0) ? -100.0f : 100.0f;
+    if (_m.jogTo((_m.originMm() + v) / 10.0f, _m.targetAngleDeg(), &err, 'S')) say(_afSel == 0 ? "En V -100: marca" : "En V +100: marca");
+    else say(err);
+  } else if (k == 1) {
+    if (_afSel == 0) afinarGo(85, 0, 50, 0);  // llega a H 50 desde H mayor (desde +)
+    else afinarGo(15, 0, 50, 0);              // desde H menor (desde -)
+  } else {
+    if (_afSel == 0) afinarGo(0, 85, 0, 50);
+    else afinarGo(0, 15, 0, 50);
+  }
+}
+
+// Lista de pasos en el orden recomendado, con una palomita en los que ya estan hechos. Los 3 de en medio son pruebas guiadas
+// (se pueden repetir cuando sea, cada una parte de lo vigente); los otros abren la pantalla que ya existia.
+void Ui::drawAfinar() {
+  header("AFINAR");
+  _cv->setTextSize(1);
+  if (!_afIn) {
+    static const char* const names[9] = {"1 NIVEL (IMUs)", "2 LIMITS (RIEL)", "3 HOME X Y", "4 ESCALA DE X", "5 HOLGURA DE Y",
+                                         "6 HOLGURA DE X", "7 INCLINAC. H", "8 INCLINAC. V", "9 ESQUINAS"};
+    static const char* const desc[9][3] = {{"Revisa con las IMUs", "que la base este", "nivelada (burbuja)."},
+                                           {"Mide el riel entre", "los finales y deja el", "centro como origen."},
+                                           {"Marca el HOME de X y", "de Y: ahi V 0 y H 0.", "Despues del paso 2."},
+                                           {"Mide cuanto avanza X", "de verdad (200 mm) y", "corrige mm por paso."},
+                                           {"Llega al mismo punto", "desde los 2 lados y", "ajusta holgura de Y."},
+                                           {"Llega al mismo punto", "desde los 2 lados y", "ajusta holgura de X."},
+                                           {"Inclina la base con", "un calzo y mide el", "salto del punto en H."},
+                                           {"Inclina la base con", "un calzo y mide el", "salto del punto en V."},
+                                           {"Marca 4, 6 o 9 puntos", "de la hoja: corrige el", "error que quede."}};
+    const uint8_t ad = _m.afinarDone();
+    float lpx, lpy, ldx, ldy;
+    const int ln = levelInfo(&lpx, &lpy, &ldx, &ldy);
+    const bool done[9] = {ln > 0 && fabsf(lpx) <= LEVEL_TOL_DEG && fabsf(lpy) <= LEVEL_TOL_DEG, _m.savedRailSteps() > 0,
+                          _m.xHomeSet() && _m.yZeroed(), (ad & 1) != 0, (ad & 2) != 0, (ad & 4) != 0, _m.tiltGainOk(0), _m.tiltGainOk(1),
+                          _m.gridPoints() > 0 && !_m.gridStale()};
+    const int top = constrain(_afTest - 5, 0, 3);  // lista de 6 renglones que se recorre
+    char lab[24];
+    for (int i = top; i < top + 6; i++) {
+      snprintf(lab, sizeof(lab), "%s%s", done[i] ? "\xFB " : "  ", names[i]);  // \xFB = palomita en la fuente de la pantalla
+      button(15 + (i - top) * 12, 11, lab, i == _afTest);
+    }
+    char b[26] = "";
+    if (_afTest < 9) {
+      _cv->setTextColor(WHITE);
+      for (int i = 0; i < 3; i++) { _cv->setCursor(3, 101 + i * 9); _cv->print(desc[_afTest][i]); }
+      switch (_afTest) {
+        case 0: if (ln > 0) snprintf(b, sizeof(b), "X %+.2f  Y %+.2f grd", lpx, lpy); else snprintf(b, sizeof(b), "sin IMU"); break;
+        case 1: if (_m.savedRailSteps() > 0) snprintf(b, sizeof(b), "Riel %ld pasos", _m.savedRailSteps()); else snprintf(b, sizeof(b), "sin medir"); break;
+        case 2: snprintf(b, sizeof(b), "HOME X %s  Y %s", _m.xHomeSet() ? "si" : "no", _m.yZeroed() ? "si" : "no"); break;
+        case 3: snprintf(b, sizeof(b), "%.7f mm/p", Cfg::X_MM_PER_STEP);
+                if (ad & 1) snprintf(b + strlen(b), sizeof(b) - strlen(b), " %.0f", _m.afinarValue(0));
+                break;
+        case 4: snprintf(b, sizeof(b), "Holg Y %d", Cfg::Y_BACKLASH_STEPS);
+                if (ad & 2) snprintf(b + strlen(b), sizeof(b) - strlen(b), " ult %+.1f", _m.afinarValue(1));
+                break;
+        case 5: snprintf(b, sizeof(b), "Holg X %d", Cfg::X_BACKLASH_STEPS);
+                if (ad & 4) snprintf(b + strlen(b), sizeof(b) - strlen(b), " ult %+.1f", _m.afinarValue(2));
+                break;
+        case 6:
+        case 7: {
+          const int w = _afTest - 6;
+          if (_m.tiltGainOk(w)) snprintf(b, sizeof(b), "%+.2f mm/grd eje %c", _m.tiltGain(w), _m.tiltAxis(w) ? 'Y' : 'X');
+          else snprintf(b, sizeof(b), "sin hacer");
+          break;
+        }
+        default: if (_m.gridPoints() == 0) snprintf(b, sizeof(b), "sin marcar");
+                 else snprintf(b, sizeof(b), "%d puntos%s", _m.gridPoints(), _m.gridStale() ? " VIEJA" : "");
+                 break;
+      }
+      _cv->setTextColor(GREY);
+      _cv->setCursor(3, 128);
+      _cv->print(b);
+    }
+    drawBackTab(_afTest == 9);
+    return;
+  }
+  const int k = _afTest - 3;
+  static const char* const txt0[4] = {"Marca el punto del", "laser en IR -100 y en", "IR +100; mide entre", "las 2 marcas (mm)."};
+  static const char* const txt1[4] = {"Marca el punto del", "laser en cada llegada", "DIF = marca desde +", "menos marca desde -"};
+  static const char* const txt2[4] = {"Marca punto, INICIO,", "inclina con calzo,", "FIN y SALTO: cuanto", "se movio (mm, signo)"};
+  const char* const* t = k == 0 ? txt0 : (k >= 3 ? txt2 : txt1);
+  _cv->setTextColor(WHITE);
+  for (int i = 0; i < 4; i++) { _cv->setCursor(3, 17 + i * 9); _cv->print(t[i]); }
+  char l0[22], l1[22], l2[22], l3[22];
+  if (k == 0) {
+    snprintf(l0, sizeof(l0), "IR A V -100");
+    snprintf(l1, sizeof(l1), "IR A V +100");
+    snprintf(l2, sizeof(l2), _editing ? "REAL: <%.1f> mm" : "REAL: %.1f mm", _afReal);
+    snprintf(l3, sizeof(l3), "APLICAR ESCALA");
+  } else if (k >= 3) {
+    float px, py, dx, dy;
+    const int n = levelInfo(&px, &py, &dx, &dy);
+    snprintf(l0, sizeof(l0), _afT0ok ? "\xFB MARCAR INICIO" : "MARCAR INICIO");
+    if (_afT0ok && n > 0) snprintf(l1, sizeof(l1), "FIN dX%+.1f dY%+.1f", px - _afT0x, py - _afT0y);
+    else snprintf(l1, sizeof(l1), "MARCAR FIN");
+    snprintf(l2, sizeof(l2), _editing ? "SALTO: <%+.1f> mm" : "SALTO: %+.1f mm", _afReal);
+    snprintf(l3, sizeof(l3), "APLICAR (%c)", k == 3 ? 'H' : 'V');
+  } else {
+    snprintf(l0, sizeof(l0), "LLEGAR DESDE +");
+    snprintf(l1, sizeof(l1), "LLEGAR DESDE -");
+    snprintf(l2, sizeof(l2), _editing ? "DIF: <%+.1f> mm" : "DIF: %+.1f mm", _afReal);
+    snprintf(l3, sizeof(l3), "APLICAR (ahora %d)", k == 1 ? Cfg::Y_BACKLASH_STEPS : Cfg::X_BACKLASH_STEPS);
+  }
+  button(56, 15, l0, _afSel == 0);
+  button(72, 15, l1, _afSel == 1);
+  button(88, 15, l2, _afSel == 2);
+  button(104, 15, l3, _afSel == 3);
+  button(120, 15, "ATRAS", _afSel == 4);
+}
+
+// Inclinacion de las IMUs (grados respecto a donde se calibraron: hay que calibrarlas sobre una superficie nivelada).
+// px / py = promedio de las IMUs con lectura (eje X / Y del chip); dx / dy = negro (X-) menos blanco (X+). Devuelve cuantas hay.
+int Ui::levelInfo(float* px, float* py, float* dx, float* dy) const {
+  float t[2][2] = {{0, 0}, {0, 0}};
+  const bool ok[2] = {_imuB.tilt(&t[0][0], &t[0][1]), _imuW.tilt(&t[1][0], &t[1][1])};
+  int n = 0;
+  *px = *py = *dx = *dy = 0;
+  for (int i = 0; i < 2; i++)
+    if (ok[i]) { *px += t[i][0]; *py += t[i][1]; n++; }
+  if (n) { *px /= n; *py /= n; }
+  if (n == 2) { *dx = t[0][0] - t[1][0]; *dy = t[0][1] - t[1][1]; }
+  return n;
+}
+
+// NIVEL: burbuja con las IMUs (ejes del chip). Centrada y verde = base nivelada (dentro de LEVEL_TOL_DEG). 1 grado = 14 puntos.
+void Ui::drawNivel() {
+  header("NIVEL");
+  float px, py, dx, dy;
+  const int n = levelInfo(&px, &py, &dx, &dy);
+  const int cx = 64, cy = 62, R = 40;
+  const float ppd = 14.0f;
+  _cv->drawCircle(cx, cy, R, WHITE);
+  _cv->drawCircle(cx, cy, (int)(LEVEL_TOL_DEG * ppd) + 4, GREY);
+  _cv->drawFastHLine(cx - R, cy, 2 * R, GREY);
+  _cv->drawFastVLine(cx, cy - R, 2 * R, GREY);
+  const bool level = n > 0 && fabsf(px) <= LEVEL_TOL_DEG && fabsf(py) <= LEVEL_TOL_DEG;
+  if (n > 0) {
+    float bx = px * ppd, by = -py * ppd;
+    const float len = sqrtf(bx * bx + by * by), maxLen = R - 6.0f;
+    if (len > maxLen) { bx *= maxLen / len; by *= maxLen / len; }
+    const float mag = max(fabsf(px), fabsf(py));
+    _cv->fillCircle(cx + (int)bx, cy + (int)by, 5, level ? C_GREEN : (mag < 1.0f ? C_ORANGE : C_RED));
+  }
+  _cv->setTextSize(1);
+  char b[26];
+  if (n == 0) {
+    textCentered(64, 106, "SIN IMU", 1, C_RED);
+  } else {
+    textCentered(64, 106, level ? "NIVELADO" : "INCLINADO", 1, level ? C_GREEN : C_ORANGE);
+    _cv->setTextColor(WHITE);
+    snprintf(b, sizeof(b), "Prom X%+.2f Y%+.2f", px, py);
+    _cv->setCursor(3, 116);
+    _cv->print(b);
+    if (n == 2) snprintf(b, sizeof(b), "Dif  X%+.2f Y%+.2f", dx, dy); else snprintf(b, sizeof(b), "Dif  (falta 1 IMU)");
+    _cv->setCursor(3, 125);
+    _cv->print(b);
+  }
+  drawBackTab(true);
+}
+
 void Ui::render() {
   _cv->fillScreen(BLACK);
   switch (_screen) {
@@ -1415,6 +1727,8 @@ void Ui::render() {
     case VELOCIDAD: drawVelocidad(); break;
     case MINMAX:   drawMinMax(); break;
     case HMARK:    drawHMark(); break;
+    case AFINAR:   drawAfinar(); break;
+    case NIVEL:    drawNivel(); break;
   }
   if (_msgUntil) {  // aviso temporal en la franja de abajo
     _cv->fillRect(0, 147, 128, 13, WHITE);

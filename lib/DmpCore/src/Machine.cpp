@@ -11,6 +11,8 @@
 namespace Cfg {
 float X_MM_PER_STEP = X_MM_PER_STEP_DEFAULT;
 float Y_DEG_PER_STEP = Y_DEG_PER_STEP_DEFAULT;
+int Y_BACKLASH_STEPS = Y_BACKLASH_DEFAULT;
+int X_BACKLASH_STEPS = X_BACKLASH_DEFAULT;
 }  // namespace Cfg
 
 static long homeSpanSteps();  // recorrido maximo de busqueda de un final de carrera
@@ -48,13 +50,106 @@ void Machine::begin() {
   _x.begin();
   _y.begin();
   _x.setInvert(xInvertLoad(Cfg::X_INVERT));  // sentido de X: config, o la correccion que guardo la calibracion de limits
-  _y.setBacklash(Cfg::Y_BACKLASH_STEPS);     // holgura de los engranes de Y al cambiar de sentido
   _limMin.begin(Pins::LIMIT_X_MIN, Cfg::LIMIT_ACTIVE, true);
   _limMax.begin(Pins::LIMIT_X_MAX, Cfg::LIMIT_ACTIVE, true);
   loadGrid();
   loadPoints();
   loadSettings();
+  _x.setBacklash(Cfg::X_BACKLASH_STEPS);  // holgura de los engranes al cambiar de sentido (CALIBRAR > AFINAR)
+  _y.setBacklash(Cfg::Y_BACKLASH_STEPS);
+  Serial.printf("[afinar] escalaX=%.7f mm/paso holguraX=%d holguraY=%d pruebas=%d%d%d (escala,Y,X) ultimos: %.2f %+.2f %+.2f\n",
+                Cfg::X_MM_PER_STEP, Cfg::X_BACKLASH_STEPS, Cfg::Y_BACKLASH_STEPS, _afDone & 1, (_afDone >> 1) & 1, (_afDone >> 2) & 1,
+                _afVal[0], _afVal[1], _afVal[2]);
 }
+
+// Holgura de X y Y en pasos (se guarda en la flash). Devuelve false si el valor no es razonable.
+bool Machine::setBacklash(int xSteps, int ySteps) {
+  if (xSteps < 0 || xSteps > 2000 || ySteps < 0 || ySteps > 300) return false;
+  Cfg::X_BACKLASH_STEPS = xSteps;
+  Cfg::Y_BACKLASH_STEPS = ySteps;
+  _x.setBacklash(xSteps);
+  _y.setBacklash(ySteps);
+#ifdef ARDUINO_ARCH_ESP32
+  Preferences p;
+  if (p.begin("dmp", false)) {
+    p.putInt("blx", xSteps);
+    p.putInt("bly", ySteps);
+    p.end();
+  }
+#endif
+  return true;
+}
+
+// Anota que una prueba de AFINAR ya se hizo y el valor que se escribio (se guarda en la flash y sale en el monitor serie).
+void Machine::afinarSave(int k, float value) {
+  if (k < 0 || k > 4) return;
+  _afDone |= (uint8_t)(1 << k);
+  _afVal[k] = value;
+#ifdef ARDUINO_ARCH_ESP32
+  Preferences p;
+  if (p.begin("dmp", false)) {
+    p.putUChar("afd", _afDone);
+    char key[4] = {'a', 'f', (char)('0' + k), 0};
+    p.putFloat(key, value);
+    p.end();
+  }
+#endif
+  Serial.printf("[afinar] prueba %d (0 escala X, 1 holgura Y, 2 holgura X, 3 incl. H, 4 incl. V) valor %+.2f -> escalaX=%.7f holguraX=%d holguraY=%d\n", k, value,
+                Cfg::X_MM_PER_STEP, Cfg::X_BACKLASH_STEPS, Cfg::Y_BACKLASH_STEPS);
+}
+
+// La inclinacion de ahora (IMUs) pasa a ser la referencia: la de la base cuando se marcaron las esquinas.
+bool Machine::setTiltRef() {
+  if (_tcN <= 0) return false;
+  _trX = _tcX;
+  _trY = _tcY;
+  _trOk = true;
+#ifdef ARDUINO_ARCH_ESP32
+  Preferences p;
+  if (p.begin("dmp", false)) {
+    p.putFloat("trx", _trX);
+    p.putFloat("try", _trY);
+    p.putBool("tro", true);
+    p.end();
+  }
+#endif
+  Serial.printf("[incl] referencia = X %+.2f Y %+.2f grados (inclinacion al marcar la hoja)\n", _trX, _trY);
+  return true;
+}
+
+// Ganancia de la inclinacion: mm que se mueve el punto por grado de inclinacion del eje del chip, en el sentido en que crece H (V).
+bool Machine::setTiltGain(int which, int axis, float mmPerDeg) {
+  which &= 1;
+  if (fabsf(mmPerDeg) < 0.01f || fabsf(mmPerDeg) > 30.0f) return false;
+  _tg[which] = mmPerDeg;
+  _ta[which] = axis & 1;
+  _tgOk[which] = true;
+#ifdef ARDUINO_ARCH_ESP32
+  Preferences p;
+  if (p.begin("dmp", false)) {
+    p.putFloat(which ? "tgv" : "tgh", mmPerDeg);
+    p.putUChar(which ? "tav" : "tah", (uint8_t)(axis & 1));
+    p.end();
+  }
+#endif
+  Serial.printf("[incl] ganancia %c = %+.3f mm por grado del eje %c del chip\n", which ? 'V' : 'H', mmPerDeg, (axis & 1) ? 'Y' : 'X');
+  return true;
+}
+
+// mm a sumar a H y V = -ganancia x (inclinacion actual - la de la referencia). Solo con IMU, referencia y ganancia.
+bool Machine::tiltCorr(float* dHmm, float* dVmm) const {
+  *dHmm = 0;
+  *dVmm = 0;
+  if (!_trOk || _tcN <= 0) return false;
+  bool any = false;
+  const float cur[2] = {_tcX, _tcY}, ref[2] = {_trX, _trY};
+  if (_tgOk[0]) { *dHmm = -_tg[0] * (cur[_ta[0]] - ref[_ta[0]]); any = true; }
+  if (_tgOk[1]) { *dVmm = -_tg[1] * (cur[_ta[1]] - ref[_ta[1]]); any = true; }
+  return any;
+}
+
+// Origen de V visto desde el HOME de X (mm): 0 si el origen es el HOME marcado.
+float Machine::originMm() const { return (originSteps(railForArea()) - _xOff) * Cfg::X_MM_PER_STEP; }
 
 // Velocidad de cada eje y largo del riel guardados en la flash (espacio "dmp": spsx, spsy, rail).
 void Machine::loadSettings() {
@@ -72,6 +167,23 @@ void Machine::loadSettings() {
     if (xmm > 0.0001f && xmm < 0.05f) Cfg::X_MM_PER_STEP = xmm;
     if (ydg > 0.001f && ydg < 0.5f) Cfg::Y_DEG_PER_STEP = ydg;
     _sheetCorner = p.getBool("sorg", false);
+    _afDone = p.getUChar("afd", 0);
+    _afVal[0] = p.getFloat("af0", 0.0f);
+    _afVal[1] = p.getFloat("af1", 0.0f);
+    _afVal[2] = p.getFloat("af2", 0.0f);
+    _afVal[3] = p.getFloat("af3", 0.0f);
+    _afVal[4] = p.getFloat("af4", 0.0f);
+    _trOk = p.getBool("tro", false);
+    _trX = p.getFloat("trx", 0.0f);
+    _trY = p.getFloat("try", 0.0f);
+    for (int w = 0; w < 2; w++) {
+      const float g = p.getFloat(w ? "tgv" : "tgh", 0.0f);
+      _tgOk[w] = fabsf(g) > 0.01f && fabsf(g) < 30.0f;
+      _tg[w] = _tgOk[w] ? g : 0.0f;
+      _ta[w] = p.getUChar(w ? "tav" : "tah", 0) & 1;
+    }
+    Cfg::X_BACKLASH_STEPS = constrain(p.getInt("blx", Cfg::X_BACKLASH_DEFAULT), 0, 2000);
+    Cfg::Y_BACKLASH_STEPS = constrain(p.getInt("bly", Cfg::Y_BACKLASH_DEFAULT), 0, 300);
     p.end();
   }
 #endif
@@ -399,6 +511,7 @@ void Machine::commitGrid() {
   for (int i = 0; i < _pN; i++) { _gx[i] = _px[i]; _gy[i] = _py[i]; }
   _gN = _pN;
   saveGrid();
+  setTiltRef();  // la inclinacion de la base de ahora es la de referencia de esta hoja
 }
 
 void Machine::saveGrid() {
@@ -432,7 +545,7 @@ void Machine::setSheetCorner(bool corner) {
 //   V -> motor X (carro): V = 0 es el HOME de X que marco el usuario (si no hay, el centro del riel que deja CALIBRAR LIMITS);
 //        X = V en mm reales, en el sentido de la hoja marcada. Marca el HOME ANTES de las esquinas (ver README).
 //   H -> motor Y (pivote): H = 0 es Y = 0 (HOME de Y marcado); H en mm se convierte con la tabla medida de SheetMap.h.
-// AREA UTIL: H de -100 a +100 y V de -150 a +150 mm. Lo que cae fuera del area, de los topes (o de la hoja marcada si no
+// AREA UTIL: H de -102 a +102 y V de -150 a +150 mm. Lo que cae fuera del area, de los topes (o de la hoja marcada si no
 // hay topes) o del rectangulo de los puntos marcados se RECHAZA, no se recorta. De la hoja marcada (4, 6 o 9 puntos) solo
 // se usa hacia donde crece cada eje y la CORRECCION de las esquinas (SheetMap.h: residuos).
 bool Machine::moveToSheet(float hMm, float vMm, const char** err, char src) {
@@ -453,7 +566,14 @@ bool Machine::moveToSheet(float hMm, float vMm, const char** err, char src) {
                           Cfg::X_MM_PER_STEP, Cfg::Y_DEG_PER_STEP, dirX, sgnY, rx, ry);
   if (SheetMap::residTooBig(rx, ry, nc * nr)) { *err = "Remarca las esquinas"; return false; }  // era de otra area
   const SheetMap::Resid res = SheetMap::residAt(rx, ry, nc, nr, hMm, vMm, Cfg::SHEET_W_MM / 2, Cfg::SHEET_H_MM / 2);
-  const SheetMap::Target t = SheetMap::correctedTarget(hMm, vMm, dirX, sgnY, res);  // X en mm desde el centro del riel
+  SheetMap::Target t = SheetMap::correctedTarget(hMm, vMm, dirX, sgnY, res);  // X en mm desde el origen de V
+  // INCLINACION: si la base ya no esta inclinada igual que al marcar la hoja, se mueve el punto lo que las IMUs dicen que se corrio.
+  float cH, cV;
+  if (tiltCorr(&cH, &cV)) {
+    if (fabsf(cH) > 15.0f || fabsf(cV) > 15.0f) { *err = "Incl. cambio: remarca"; return false; }
+    t.xMm += dirX * cV;
+    t.yDeg += sgnY * (SheetMap::hToYdeg(hMm + cH) - SheetMap::hToYdeg(hMm));
+  }
   const float cOff = (originSteps(rail) - _xOff) * Cfg::X_MM_PER_STEP;  // origen de V visto desde el HOME de X (0 si es el HOME)
   bad = SheetMap::checkRange(t, xMinCm() * 10.0f - cOff, xMaxCm() * 10.0f - cOff, yMinDeg(), yMaxDeg(),
                              Cfg::X_MM_PER_STEP / 2.0f, Cfg::Y_DEG_PER_STEP * 0.5f);

@@ -32,7 +32,7 @@ class Ui {
   // VELOCIDAD: velocidad de cada eje. ESCALA (MEDIR Y ESCALA): contador libre y escala de Y. MINMAX: topes de MOVER.
   // HMARK: marcar el HOME. GUARDADOS: puntos guardados. ARRANQUE: ofrecer REFERENCIAR X al encender.
   enum Screen : uint8_t { MENU, MOVER, HOME, SENSORES, RED, CALIBRAR, LIMITS, PUNTOS, MARCAR, VELOCIDAD,
-                          MINMAX, HMARK, AJUSTES, ESCALA, GUARDADOS, ARRANQUE };
+                          MINMAX, HMARK, AJUSTES, ESCALA, GUARDADOS, ARRANQUE, AFINAR, NIVEL };
 
   // dibujo
   void render();
@@ -53,6 +53,12 @@ class Ui {
   void drawEscala();
   void drawGuardados();
   void drawArranque();
+  void drawAfinar();
+  void drawNivel();
+  // Inclinacion de las IMUs (grados, respecto a donde se calibraron): promedio y diferencia negro - blanco. n = IMUs con lectura.
+  int levelInfo(float* px, float* py, float* dx, float* dy) const;
+  void afinarClick();
+  void afinarGo(float h, float v, float h2, float v2);  // mueve a (h, v) y luego a (h2, v2)
   float limRealShown() const;  // riel real que se muestra en LIMITS (escrito o propuesto)
   void box(int x, int y, int w, int h, const char* text, bool sel);  // recuadro pequeno con texto centrado
   void homeBoxes(int y, int h, int sel);  // recuadros HOME X / HOME Y / AMBOS (sel = indice elegido, -1 ninguno)
@@ -109,6 +115,13 @@ class Ui {
   int _limSel = 0;       // en LIMITS: 0 = corridas, 1 = INICIAR, 2 = riel REAL, 3 = APLICAR ESCALA, 4 = REGRESAR
   float _limReal = 0;    // riel real (mm, de tope a tope) escrito con la perilla
   bool _limRealSet = false;  // false = se propone lo que cree el equipo
+  // AFINAR: _afTest 0 = ESCALA X, 1 = HOLGURA Y, 2 = HOLGURA X, 3 = REGRESAR; dentro (_afIn) _afSel 0..4 y _afReal escrito.
+  int _afTest = 0, _afSel = 0;
+  bool _afIn = false, _afPend = false;
+  float _afReal = 0, _afH2 = 0, _afV2 = 0;
+  float _afT0x = 0, _afT0y = 0, _afT1x = 0, _afT1y = 0;  // inclinacion al marcar inicio y fin (pruebas de inclinacion)
+  bool _afT0ok = false, _afT1ok = false;
+  uint32_t _tiltFeed = 0;
   int _bootSel = 0;      // en ARRANQUE: 0 = REFERENCIAR AHORA, 1 = DESPUES
   int _limRuns = 3;      // corridas elegidas para la calibracion de limits (1..Cfg::LIMIT_CAL_MAX_RUNS)
   int _mmSel = 0;        // en MINMAX: 0 = X, 1 = Y, 2..5 = X min, X max, Y min, Y max, 6 = BORRAR, 7 = REGRESAR

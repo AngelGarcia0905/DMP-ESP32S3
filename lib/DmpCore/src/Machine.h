@@ -139,6 +139,25 @@ class Machine {
   void setSpeeds(int spsX, int spsY);
   // Escalas corregidas con lo medido (AJUSTES > ESCALA): mm por paso de X y grados por paso de Y (0 = no tocar ese eje).
   bool setScales(float xMmPerStep, float yDegPerStep);
+  bool setBacklash(int xSteps, int ySteps);  // holgura al cambiar de sentido, en pasos (se guarda en flash)
+  // AFINAR (pruebas guiadas): bit k de afinarDone() = la prueba k (0 escala X, 1 holgura Y, 2 holgura X) ya se hizo; afinarValue(k) =
+  // lo ultimo que se escribio en ella (real mm / DIF mm). Se guardan en la flash para verlos al conectar.
+  uint8_t afinarDone() const { return _afDone; }
+  float afinarValue(int k) const { return (k >= 0 && k < 5) ? _afVal[k] : 0.0f; }
+  void afinarSave(int k, float value);
+  // Correccion por inclinacion: mm que se suman a H y V para que el punto caiga donde se pide aunque la base ya no este inclinada
+  // igual que al marcar la hoja. false si no hay con que corregir (sin IMU, sin referencia o sin ganancia aprendida).
+  void setTilt(float px, float py, int n) { _tcX = px; _tcY = py; _tcN = n; }
+  bool setTiltRef();  // la inclinacion de ahora pasa a ser la de referencia (se hace sola al terminar de marcar la hoja)
+  bool setTiltGain(int which, int axis, float mmPerDeg);  // which 0 = H, 1 = V; axis 0 / 1 = eje X / Y del chip
+  bool tiltRefOk() const { return _trOk; }
+  float tiltRefX() const { return _trX; }
+  float tiltRefY() const { return _trY; }
+  bool tiltGainOk(int w) const { return _tgOk[w & 1]; }
+  float tiltGain(int w) const { return _tg[w & 1]; }
+  int tiltAxis(int w) const { return _ta[w & 1]; }
+  bool tiltCorr(float* dHmm, float* dVmm) const;
+  float originMm() const;                    // origen de V (mm desde el HOME de X marcado)
   void resetScales();  // vuelve a las de fabrica de dmp_config.h
   // Largo del riel guardado en la flash (pasos; 0 = sin guardar). Lo guardan CALIBRAR LIMITS (promedio) y el HOME que
   // mide; con el guardado, el HOME es rapido: le basta tocar un interruptor.
@@ -279,6 +298,17 @@ class Machine {
   void failHomeY(const char* msg);
   As5600* _enc = nullptr;
   long _xOff = 0;           // HOME de X en pasos desde X- (flash "dmp": hxo); X = 0 ahi
+  uint8_t _afDone = 0;      // flash "dmp": afd
+  float _afVal[5] = {0, 0, 0, 0, 0};  // flash "dmp": af0..af4 (0 escala X, 1 holgura Y, 2 holgura X, 3 inclinacion H, 4 inclinacion V)
+  // INCLINACION (IMUs): la Ui pasa la inclinacion actual (promedio de las IMUs, ejes del chip); la de referencia es la del momento
+  // de marcar la hoja (flash trx, try, tro); la ganancia de cada eje de la hoja (H, V) sale de CALIBRAR > AFINAR (tgh, tgv, tah, tav).
+  float _tcX = 0, _tcY = 0;
+  int _tcN = 0;
+  float _trX = 0, _trY = 0;
+  bool _trOk = false;
+  float _tg[2] = {0, 0};
+  uint8_t _ta[2] = {0, 0};
+  bool _tgOk[2] = {false, false};
   bool _xHomeSet = false;   // flash "dmp": hxs
   bool _sheetCorner = false;  // origen mostrado de la hoja: false centro, true esquina inferior izquierda
 

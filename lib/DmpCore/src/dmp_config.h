@@ -35,7 +35,11 @@ inline float yReductionEff() { return (360.0f / STEPS_PER_REV) / Y_DEG_PER_STEP;
 // Holgura de los engranes de Y al cambiar de sentido: el motor da estos pasos EXTRA (no se cuentan en la posicion) antes
 // de que el laser empiece a moverse hacia el otro lado. Medido el 2026-11-12: al regresar hicieron falta 4 a 10 pasos de
 // mas; 30 es el valor actual (0 = sin compensar). Subirlo si al regresar todavia queda corto, bajarlo si se pasa.
-constexpr int Y_BACKLASH_STEPS = 30;
+constexpr int Y_BACKLASH_DEFAULT = 30;
+constexpr int X_BACKLASH_DEFAULT = 0;  // X no tenia compensacion; CALIBRAR > AFINAR la mide y la guarda
+// Valores vigentes: los de arriba, o los que dejo CALIBRAR > AFINAR (guardados en la flash: blx, bly).
+extern int Y_BACKLASH_STEPS;
+extern int X_BACKLASH_STEPS;
 
 // Flip these if an axis moves the wrong way (positive X = right, positive Y = clockwise).
 constexpr bool X_INVERT = false;  // con los finales de carrera intercambiados (GPIO 47 = X-, GPIO 1 = X+), pasos negativos
@@ -97,11 +101,11 @@ constexpr float LIMIT_SEARCH_MAX_CM = 120.0f;
 constexpr int LIMIT_CAL_SAMPLES = 3;
 constexpr int LIMIT_CAL_MAX_RUNS = 5;
 
-// AREA UTIL: 30 cm a lo largo del riel (X, V de -150 a +150 mm) y 20 cm en el sentido del angulo (Y, H de -100 a +100 mm).
+// AREA UTIL: 30 cm a lo largo del riel (X, V de -150 a +150 mm) y 20 cm en el sentido del angulo (Y, H de -102 a +102 mm; 204 mm medidos).
 // El (0, 0) es el HOME marcado: V = 0 es el HOME de X (si no se marco otro, el centro del riel que deja CALIBRAR LIMITS)
 // y H = 0 es el HOME de Y (Y = 0 grados). H positivo a un lado y V positivo arriba (los sentidos salen de la hoja marcada).
 // Fuera de esta area MOVER no se mueve; las esquinas marcadas (o los topes) pueden encerrarla mas, nunca ampliarla.
-constexpr float SHEET_W_MM = 200.0f;  // H: ancho del area, lo recorre el motor Y
+constexpr float SHEET_W_MM = 204.0f;  // H: ancho del area, lo recorre el motor Y
 constexpr float SHEET_H_MM = 300.0f;  // V: alto del area, lo recorre el motor X
 // Al salir de un interruptor presionado, si no se despega tras estos PASOS el sentido de los pasos estaba al reves:
 // se invierte y se sigue. NO es un limite de recorrido: solo sirve para decidir el sentido. (Antes se calculaba a partir de
