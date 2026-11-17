@@ -68,6 +68,9 @@ constexpr int SENS_ROWS = 12;  // renglones visibles en SENSORES (la lista se re
 constexpr int H_STEP_MM = 1, H_FAST_MULT = 5;  // H / V de la hoja: 1 mm por clic, 5 mm girando rapido
 
 inline float yDegOf(int steps) { return steps * Cfg::Y_DEG_PER_STEP; }
+// H/V de la hoja: por dentro siempre centro = 0; en pantalla se suma esto si el origen es la esquina inferior izquierda.
+inline float hShift(const Machine& m) { return m.sheetCorner() ? Cfg::SHEET_W_MM / 2 : 0.0f; }
+inline float vShift(const Machine& m) { return m.sheetCorner() ? Cfg::SHEET_H_MM / 2 : 0.0f; }
 // Rango de MOVER en las unidades de la perilla (mm enteros de X, pasos de Y), siempre hacia adentro.
 inline int xLoMm(const Machine& m) { return (int)ceilf(m.xMinCm() * 10.0f - 0.01f); }
 inline int xHiMm(const Machine& m) { return (int)floorf(m.xMaxCm() * 10.0f + 0.01f); }
@@ -260,7 +263,7 @@ void Ui::onTurn(int d, bool fast) {
   } else if (_screen == CALIBRAR) {
     _calSel = ((_calSel + d) % (CAL_N + 1) + CAL_N + 1) % (CAL_N + 1);  // IMUs, HOME, LIMITS, HOJA, TOPES, REGRESAR
   } else if (_screen == AJUSTES) {
-    _ajSel = ((_ajSel + d) % 3 + 3) % 3;    // VELOCIDAD, MEDIR Y ESCALA, REGRESAR
+    _ajSel = ((_ajSel + d) % 4 + 4) % 4;    // VELOCIDAD, MEDIR Y ESCALA, ORIGEN HOJA, REGRESAR
   } else if (_screen == GUARDADOS) {
     if (_editing && _gSel == 0) _gSlot = ((_gSlot + d) % Machine::kMaxSaved + Machine::kMaxSaved) % Machine::kMaxSaved;
     else _gSel = ((_gSel + d) % 5 + 5) % 5;  // PUNTO n, GUARDAR AQUI, IR AL PUNTO, BORRAR, REGRESAR
@@ -291,7 +294,7 @@ void Ui::onTurn(int d, bool fast) {
       int k = _ptsN == 4 ? 0 : (_ptsN == 6 ? 1 : 2);
       _ptsN = kN[((k + d) % 3 + 3) % 3];
     } else {
-      _ptsSel = ((_ptsSel + d) % 3 + 3) % 3;
+      _ptsSel = ((_ptsSel + d) % 4 + 4) % 4;  // Pts, INICIAR, AGREGAR, REGRESAR
     }
   } else if (_screen == MARCAR) {
     if (!_editing) _markSel = ((_markSel + d) % 5 + 5) % 5;  // X, Y, OK, LASER, REGRESAR
@@ -311,10 +314,9 @@ void Ui::onTurn(int d, bool fast) {
       editAxis(_axisSel, d, fast);  // X / Y: en vivo, cada clic mueve
     } else {  // H / V de la hoja (mm): solo se ESCRIBE el valor; el boton IR mueve
       const float step = d * H_STEP_MM * (fast ? H_FAST_MULT : 1);
-      // Desde el HOME marcado, que puede estar en cualquier parte: se puede escribir hasta una hoja completa a cada lado;
-      // lo que pase de los limites de MOVER lo rechaza IR.
-      if (_axisSel == 2) _hMm = constrain(_hMm + step, -Cfg::SHEET_W_MM, Cfg::SHEET_W_MM);
-      else _vMm = constrain(_vMm + step, -Cfg::SHEET_H_MM, Cfg::SHEET_H_MM);
+      // Dentro del area util (centro = 0); lo que pase de los topes o de la hoja marcada lo rechaza IR.
+      if (_axisSel == 2) _hMm = constrain(_hMm + step, -Cfg::SHEET_W_MM / 2, Cfg::SHEET_W_MM / 2);
+      else _vMm = constrain(_vMm + step, -Cfg::SHEET_H_MM / 2, Cfg::SHEET_H_MM / 2);
     }
   }
   else if (_screen == RED) _redSel = 1 - _redSel;  // boton del punto de acceso o REGRESAR
@@ -397,7 +399,7 @@ void Ui::onClick() {
         say(err);
       }
     } else {
-      if (_axisSel >= 2 && !_sheetValid) { _hMm = 0; _vMm = 0; _sheetValid = true; }  // parte del HOME (H 0, V 0)
+      if (_axisSel >= 2 && !_sheetValid) { _hMm = 0; _vMm = 0; _sheetValid = true; }  // parte del centro del area (H 0, V 0)
       _editing = !_editing;  // un clic entra a editar; otro clic sale y se puede elegir otra fila
     }
   } else if (_screen == ARRANQUE) {
@@ -423,10 +425,10 @@ void Ui::onClick() {
     } else { _screen = CALIBRAR; _editing = false; }
   } else if (_screen == PUNTOS) {
     if (_ptsSel == 0) _editing = !_editing;
-    else if (_ptsSel == 1) {
-      if (_m.beginGrid(_ptsN, &err)) {
+    else if (_ptsSel == 1 || _ptsSel == 2) {  // INICIAR (marca todos) o AGREGAR (conserva los vigentes y marca solo los nuevos)
+      if (_m.beginGrid(_ptsN, &err, _ptsSel == 2)) {
         _screen = MARCAR;
-        _ptIdx = 0;
+        _ptIdx = _m.nextPoint(0);
         _markSel = 0;
         _editing = false;
         adoptTarget();
@@ -454,7 +456,7 @@ void Ui::onClick() {
       char b[24];
       if (!_m.markPoint(_ptIdx, &err)) {
         say(err);
-      } else if (_ptIdx + 1 >= _ptsN) {
+      } else if (_m.nextPoint(_ptIdx + 1) >= _ptsN) {  // ya estan todos (los conservados no se vuelven a marcar)
         _m.commitGrid();
         snprintf(b, sizeof(b), "Hoja lista: %d pts", _ptsN);
         say(b);
@@ -463,7 +465,7 @@ void Ui::onClick() {
       } else {
         snprintf(b, sizeof(b), "Punto %d guardado", _ptIdx + 1);
         say(b);
-        _ptIdx++;
+        _ptIdx = _m.nextPoint(_ptIdx + 1);
         _markSel = 0;
       }
     } else if (_markSel == 3) {
@@ -513,6 +515,9 @@ void Ui::onClick() {
       adoptTarget();
       markMeasureStart();
       _realY = 0;
+    } else if (_ajSel == 2) {  // ORIGEN de la hoja: centro <-> esquina inferior izquierda (solo cambia lo que se muestra)
+      _m.setSheetCorner(!_m.sheetCorner());
+      say(_m.sheetCorner() ? "Origen: esquina" : "Origen: centro");
     } else {
       _screen = MENU;
     }
@@ -594,9 +599,6 @@ void Ui::onClick() {
       if (_m.markHome(x, y, &err)) {
         say(x && y ? "HOME marcado (X y Y)" : (x ? "HOME X marcado" : "HOME Y marcado"));
         adoptTarget();  // ahora este lugar es X = 0 / Y = 0
-        // El HOME es el origen de la hoja: V 0 = HOME X, H 0 = HOME Y. Con los dos marcados el laser queda en H 0, V 0.
-        if (x && y) { _hMm = 0; _vMm = 0; _sheetValid = true; }
-        else if (_sheetValid) { if (x) _vMm = 0; else _hMm = 0; }
       } else {
         say(err);
       }
@@ -792,9 +794,10 @@ void Ui::drawMover() {
     valueRow(34, "Y grd", v, _axisSel == 1, _editing && _axisSel == 1, 17);
   }
   const bool sheet = _m.gridPoints() && _sheetValid;
-  if (sheet) snprintf(v, sizeof(v), "%+.0f", _hMm); else snprintf(v, sizeof(v), "--");
+  const char* fmt = _m.sheetCorner() ? "%.0f" : "%+.0f";
+  if (sheet) snprintf(v, sizeof(v), fmt, _hMm + hShift(_m)); else snprintf(v, sizeof(v), "--");
   valueRow(52, "H mm", v, _axisSel == 2, _editing && _axisSel == 2, 17);
-  if (sheet) snprintf(v, sizeof(v), "%+.0f", _vMm); else snprintf(v, sizeof(v), "--");
+  if (sheet) snprintf(v, sizeof(v), fmt, _vMm + vShift(_m)); else snprintf(v, sizeof(v), "--");
   valueRow(70, "V mm", v, _axisSel == 3, _editing && _axisSel == 3, 17);
   button(88, 11, "IR A H, V", _axisSel == 4);
   homeBoxes(101, 11, _axisSel - 5);
@@ -915,6 +918,16 @@ void Ui::drawSensores() {
   title("FINALES DE CARRERA");
   row("Fin X-", _m.limitXMin() ? "ACTIVADO" : "libre", _m.limitXMin() ? C_RED : C_GREEN);
   row("Fin X+", _m.limitXMax() ? "ACTIVADO" : "libre", _m.limitXMax() ? C_RED : C_GREEN);
+
+  title("PASOS PERDIDOS");  // X: al tocar un final de carrera; Y: correccion con el AS5600 tras cada movimiento
+  snprintf(v, sizeof(v), "%+ld", _m.xLostLast());                      row("X ult.", v, _m.xRefCount() ? WHITE : GREY);
+  snprintf(v, sizeof(v), "%ld", _m.xLostTotal());                      row("X total", v, _m.xRefCount() ? WHITE : GREY);
+  snprintf(v, sizeof(v), "%d", _m.xRefCount());                        row("X referenc", v, GREY);
+  snprintf(v, sizeof(v), "%+ld", _m.yLostLast());                      row("Y ult.", v, _m.yTrimCount() ? WHITE : GREY);
+  snprintf(v, sizeof(v), "%ld", _m.yLostTotal());                      row("Y total", v, _m.yTrimCount() ? WHITE : GREY);
+  snprintf(v, sizeof(v), "%d", _m.yTrimCount());                       row("Y correg.", v, GREY);
+  row("Y sensor", _m.yTrimBlocked() ? "AL REVES" : (_enc.live() && _enc.hasZero() ? "corrige" : "sin sensor"),
+      _m.yTrimBlocked() ? C_RED : (_enc.live() && _enc.hasZero() ? C_GREEN : GREY));
 
   title("LASER");
   row("Estado", _m.laser() ? "ENCENDIDO" : "apagado", _m.laser() ? C_RED : GREY);
@@ -1037,29 +1050,31 @@ void Ui::drawCalibrar() {
   drawBackTab(_calSel == CAL_N);
 }
 
-// AJUSTES: VELOCIDAD de cada eje y MEDIR Y ESCALA (contador libre y correccion de la escala de Y; la de X va en LIMITS).
-// El origen de H/V ya no es un ajuste: es el HOME marcado (CALIBRAR > HOME).
+// AJUSTES: VELOCIDAD de cada eje, MEDIR Y ESCALA (contador libre y correccion de la escala de Y; la de X va en LIMITS) y
+// ORIGEN de la hoja (un clic cambia entre centro y esquina inferior izquierda; solo cambia los numeros que se muestran).
 void Ui::drawAjustes() {
   header("AJUSTES");
   button(17, 21, "VELOCIDAD", _ajSel == 0);
   button(41, 21, "MEDIR Y ESCALA", _ajSel == 1);
+  button(65, 21, _m.sheetCorner() ? "ORIGEN: ESQUINA" : "ORIGEN: CENTRO", _ajSel == 2);
   char b[24];
   _cv->setTextSize(1);
   _cv->setTextColor(WHITE);
   snprintf(b, sizeof(b), "Vel. X %d p/s", _m.speedX());
-  _cv->setCursor(3, 70);
+  _cv->setCursor(3, 90);
   _cv->print(b);
   snprintf(b, sizeof(b), "Vel. Y %d p/s", _m.speedY());
-  _cv->setCursor(3, 79);
+  _cv->setCursor(3, 99);
   _cv->print(b);
   _cv->setTextColor(GREY);
-  _cv->setCursor(3, 95);
-  _cv->print("H 0, V 0 = HOME");
-  _cv->setCursor(3, 104);
-  _cv->print("(CALIBRAR > HOME)");
+  _cv->setCursor(3, 110);
+  _cv->print(_m.sheetCorner() ? "(0,0) = esq. inf izq" : "(0,0) = centro");
   _cv->setCursor(3, 119);
+  snprintf(b, sizeof(b), "Area H%.0f x V%.0f mm", Cfg::SHEET_W_MM, Cfg::SHEET_H_MM);
+  _cv->print(b);
+  _cv->setCursor(3, 128);
   _cv->print("Escala X: en LIMITS");
-  drawBackTab(_ajSel == 2);
+  drawBackTab(_ajSel == 3);
 }
 
 // MEDIR Y ESCALA: se marca un inicio, se mueven X y Y con la perilla (sin limites) y se ve en vivo cuantos pasos dio cada
@@ -1320,28 +1335,28 @@ void Ui::drawArranque() {
   button(122, 22, "DESPUES", _bootSel == 1);
 }
 
-// PUNTOS DE LA HOJA: se eligen 4, 6 o 9 puntos y se inicia el marcado (pantalla MARCAR).
+// PUNTOS DE LA HOJA: se eligen 4, 6 o 9 puntos y se inicia el marcado (pantalla MARCAR): INICIAR marca todos, AGREGAR conserva
+// los que ya estan (4 -> 6 o 9, 6 -> 9) y solo pide los nuevos.
 void Ui::drawPuntos() {
   header("HOJA");
   char v[8];
   snprintf(v, sizeof(v), "%d", _ptsN);
   valueRow(17, "Pts", v, _ptsSel == 0, _editing && _ptsSel == 0);
-  button(40, 19, "INICIAR", _ptsSel == 1);
+  button(40, 15, "INICIAR (TODOS)", _ptsSel == 1);
+  button(57, 15, "AGREGAR PUNTOS", _ptsSel == 2);  // conserva los puntos vigentes: solo se marcan los nuevos
   char b[24];
   if (_m.gridPoints()) snprintf(b, sizeof(b), "%d puntos", _m.gridPoints()); else snprintf(b, sizeof(b), "sin calib");
-  statusRow(64, "Hoja", b, _m.gridPoints() ? C_GREEN : WHITE);
+  statusRow(75, "Hoja", b, _m.gridPoints() ? C_GREEN : WHITE);
   _cv->setTextColor(GREY);
-  _cv->setCursor(3, 74);
-  _cv->print(_ptsN == 4 ? "4 esquinas" : (_ptsN == 6 ? "esquinas + centro" : "esquinas, centros"));
-  _cv->setCursor(3, 83);
-  _cv->print(_ptsN == 4 ? "" : (_ptsN == 6 ? "arriba y abajo" : "de lados y centro"));
+  _cv->setCursor(3, 85);
+  _cv->print(_ptsN == 4 ? "4 esquinas" : (_ptsN == 6 ? "esq+centro arr/abajo" : "esq+lados+centro"));
   _cv->setTextColor(WHITE);
-  snprintf(b, sizeof(b), "Hoja %.0f x %.0f mm", Cfg::SHEET_W_MM, Cfg::SHEET_H_MM);
+  snprintf(b, sizeof(b), "Area H%.0f x V%.0f mm", Cfg::SHEET_W_MM, Cfg::SHEET_H_MM);
   _cv->setCursor(3, 95);
   _cv->print(b);
   _cv->setTextColor(GREY);
   _cv->setCursor(3, 104);
-  _cv->print("H 0, V 0 = HOME");
+  _cv->print(_m.sheetCorner() ? "(0,0) = esq. inf izq" : "(0,0) = centro");
   // Requisitos para marcar: X calibrado (para que los puntos sigan valiendo al reiniciar) y Y con referencia.
   const char* req = !_m.xHomed() ? "Falta calibrar X" : (!_m.yZeroed() ? "Y sin referencia" : "Listo para marcar");
   _cv->setTextColor(_m.xHomed() && _m.yZeroed() ? C_GREEN : C_RED);
@@ -1350,7 +1365,7 @@ void Ui::drawPuntos() {
   _cv->setTextColor(GREY);
   _cv->setCursor(3, 127);
   _cv->print(_editing ? "girar:4/6/9 clic:ok" : "girar:fila clic:ok");
-  drawBackTab(_ptsSel == 2);
+  drawBackTab(_ptsSel == 3);
 }
 
 // Marcado guiado: dice que punto toca; se acomoda el laser con X y Y (SIN limite de angulo) y OK lo guarda y pasa al
@@ -1360,7 +1375,9 @@ void Ui::drawMarcar() {
   snprintf(b, sizeof(b), "PUNTO %d/%d", _ptIdx + 1, _ptsN);
   header(b);
   textCentered(64, 19, Machine::pointName(_ptsN, _ptIdx), 2, WHITE);
-  snprintf(b, sizeof(b), "esquina de la hoja");  // H/V se miden desde el HOME, no desde la hoja: aqui solo se marca donde cae
+  float h, v;
+  Machine::pointSheetMm(_ptsN, _ptIdx, &h, &v);  // donde cae esa esquina en el area util (centro = 0)
+  snprintf(b, sizeof(b), _m.sheetCorner() ? "hoja H%.1f V%.1f" : "hoja H%+.1f V%+.1f", h + hShift(_m), v + vShift(_m));
   _cv->setTextSize(1);
   _cv->setTextColor(GREY);
   _cv->setCursor(3, 37);

@@ -97,10 +97,12 @@ constexpr float LIMIT_SEARCH_MAX_CM = 120.0f;
 constexpr int LIMIT_CAL_SAMPLES = 3;
 constexpr int LIMIT_CAL_MAX_RUNS = 5;
 
-// Hoja (carta acostada): ancho a lo largo del riel (X) y alto en el sentido del angulo. El (0, 0) es el centro de la
-// hoja: horizontal positivo a la derecha (X+), vertical positivo hacia arriba (angulo negativo).
-constexpr float SHEET_W_MM = 279.0f;
-constexpr float SHEET_H_MM = 216.0f;
+// AREA UTIL: 30 cm a lo largo del riel (X, V de -150 a +150 mm) y 20 cm en el sentido del angulo (Y, H de -100 a +100 mm).
+// El (0, 0) es el CENTRO de la hoja: V = 0 es el centro del riel (lo deja CALIBRAR LIMITS con el promedio de las corridas)
+// y H = 0 es Y = 0 grados (HOME de Y). H positivo a un lado y V positivo arriba (los sentidos salen de la hoja marcada).
+// Fuera de esta area MOVER no se mueve; las esquinas marcadas (o los topes) pueden encerrarla mas, nunca ampliarla.
+constexpr float SHEET_W_MM = 200.0f;  // H: ancho del area, lo recorre el motor Y
+constexpr float SHEET_H_MM = 300.0f;  // V: alto del area, lo recorre el motor X
 // Al salir de un interruptor presionado, si no se despega tras estos PASOS el sentido de los pasos estaba al reves:
 // se invierte y se sigue. NO es un limite de recorrido: solo sirve para decidir el sentido. (Antes se calculaba a partir de
 // mm y con la escala vieja salian 13 050 pasos; se deja fijo en pasos para que corregir los mm/paso no lo cambie.)

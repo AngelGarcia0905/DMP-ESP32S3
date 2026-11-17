@@ -2,6 +2,7 @@
 
 #include "As5600.h"
 #include "SheetMap.h"
+#include "StepGuard.h"
 
 #ifdef ARDUINO_ARCH_ESP32
 #include <Preferences.h>
@@ -70,6 +71,7 @@ void Machine::loadSettings() {
     const float xmm = p.getFloat("xmm", 0.0f), ydg = p.getFloat("ydg", 0.0f);
     if (xmm > 0.0001f && xmm < 0.05f) Cfg::X_MM_PER_STEP = xmm;
     if (ydg > 0.001f && ydg < 0.5f) Cfg::Y_DEG_PER_STEP = ydg;
+    _sheetCorner = p.getBool("sorg", false);
     p.end();
   }
 #endif
@@ -299,35 +301,84 @@ float Machine::topeValue(int i) const {  // X desde el HOME marcado (como se mue
 
 // Limites de MOVER: topes (si estan los 4), si no el rectangulo de los puntos de la hoja, si no libre. min/max se
 // ordenan por si se marcaron al reves. X se devuelve desde el HOME marcado (como se muestra).
+// AREA UTIL en X: el centro del riel +/- la mitad del alto del area (V), en cm desde el HOME de X marcado.
+float Machine::areaXLoCm() const {
+  return (SheetMap::centerFromHomeMm(railForArea(), _xOff, Cfg::X_MM_PER_STEP) - Cfg::SHEET_H_MM / 2) / 10.0f;
+}
+float Machine::areaXHiCm() const {
+  return (SheetMap::centerFromHomeMm(railForArea(), _xOff, Cfg::X_MM_PER_STEP) + Cfg::SHEET_H_MM / 2) / 10.0f;
+}
+
+// Los limites de MOVER son la INTERSECCION del area util (siempre, con el eje referenciado) y los topes o la hoja marcada.
 float Machine::xMinCm() const {
-  if (!limitX()) return -Cfg::X_FREE_CM;
-  const long v = topesReady() ? min(_tx[0], _tx[1]) : gridMin(_gx);
-  return (v - _xOff) * Cfg::X_MM_PER_STEP / 10.0f;
+  float lo = -Cfg::X_FREE_CM;
+  if (limitX()) lo = ((topesReady() ? min(_tx[0], _tx[1]) : gridMin(_gx)) - _xOff) * Cfg::X_MM_PER_STEP / 10.0f;
+  if (areaX()) lo = max(lo, areaXLoCm());
+  return lo;
 }
 
 float Machine::xMaxCm() const {
-  if (!limitX()) return Cfg::X_FREE_CM;
-  const long v = topesReady() ? max(_tx[0], _tx[1]) : gridMax(_gx);
-  return (v - _xOff) * Cfg::X_MM_PER_STEP / 10.0f;
+  float hi = Cfg::X_FREE_CM;
+  if (limitX()) hi = ((topesReady() ? max(_tx[0], _tx[1]) : gridMax(_gx)) - _xOff) * Cfg::X_MM_PER_STEP / 10.0f;
+  if (areaX()) hi = min(hi, areaXHiCm());
+  return hi;
 }
 
 float Machine::yMinDeg() const {
-  if (!limitY()) return Cfg::Y_MIN_DEG;
-  return (topesReady() ? min(_ty[0], _ty[1]) : gridMin(_gy)) * Cfg::Y_DEG_PER_STEP;
+  float lo = Cfg::Y_MIN_DEG;
+  if (limitY()) lo = (topesReady() ? min(_ty[0], _ty[1]) : gridMin(_gy)) * Cfg::Y_DEG_PER_STEP;
+  if (areaY()) lo = max(lo, -SheetMap::areaYDeg(Cfg::SHEET_W_MM / 2));
+  return lo;
 }
 
 float Machine::yMaxDeg() const {
-  if (!limitY()) return Cfg::Y_MAX_DEG;
-  return (topesReady() ? max(_ty[0], _ty[1]) : gridMax(_gy)) * Cfg::Y_DEG_PER_STEP;
+  float hi = Cfg::Y_MAX_DEG;
+  if (limitY()) hi = (topesReady() ? max(_ty[0], _ty[1]) : gridMax(_gy)) * Cfg::Y_DEG_PER_STEP;
+  if (areaY()) hi = min(hi, SheetMap::areaYDeg(Cfg::SHEET_W_MM / 2));
+  return hi;
 }
 
-bool Machine::beginGrid(int n, const char** err) {
+bool Machine::beginGrid(int n, const char** err, bool keep) {
   if (!validGridN(n)) { *err = "Puntos: 4, 6 o 9"; return false; }
   if (homing()) { *err = "HOME en curso"; return false; }
   if (!_xHomed) { *err = "Calibra X primero"; return false; }  // sin referencia, la X guardada no serviria al reiniciar
   if (!_yZeroed) { *err = "Y sin referencia"; return false; }
+  if (keep) {  // AGREGAR: se conservan los puntos vigentes, solo se marcan los nuevos
+    if (!_gN) { *err = "Sin hoja: INICIAR"; return false; }
+    if (n <= _gN) { *err = "Elige mas puntos"; return false; }
+    if (gridStale()) { *err = "Hoja vieja: remarca"; return false; }  // era de otra area: no sirve conservarla
+  }
   _pN = n;
+  _pHave = 0;
+  if (keep) {
+    for (int i0 = 0; i0 < _gN; i0++) {
+      const int j = SheetMap::gridKeepIndex(_gN, n, i0);
+      _px[j] = _gx[i0];
+      _py[j] = _gy[i0];
+      _pHave |= (1 << j);
+    }
+  }
   return true;
+}
+
+int Machine::nextPoint(int from) const {
+  for (int i = from < 0 ? 0 : from; i < _pN; i++)
+    if (!pointKept(i)) return i;
+  return _pN;
+}
+
+// La hoja vigente se marco para otra area (o no se puede revisar porque falta el largo del riel): los residuos contra el
+// modelo pasan de kMaxResidMm / kMaxResidDeg.
+bool Machine::gridStale() const {
+  const long rail = railForArea();
+  if (!_gN || rail <= 0) return true;
+  const int nc = gridCols(_gN), nr = gridRows(_gN);
+  int dirX, sgnY;
+  SheetMap::gridDirs(_gx, _gy, nc, nr, &dirX, &sgnY);
+  float rx[kMaxPts], ry[kMaxPts];
+  SheetMap::gridResiduals(_gx, _gy, nc, nr, Cfg::SHEET_W_MM / 2, Cfg::SHEET_H_MM / 2, SheetMap::railCenterSteps(rail),
+                          Cfg::X_MM_PER_STEP, Cfg::Y_DEG_PER_STEP, dirX, sgnY, rx, ry);
+  return SheetMap::residTooBig(rx, ry, nc * nr);
 }
 
 bool Machine::markPoint(int i, const char** err) {
@@ -338,6 +389,7 @@ bool Machine::markPoint(int i, const char** err) {
   if (!_yZeroed) { *err = "Y sin referencia"; return false; }
   _px[i] = _x.position();
   _py[i] = lroundf(Cfg::ANGLE_SIGN * _y.position());
+  _pHave |= (1 << i);
   return true;
 }
 
@@ -364,29 +416,54 @@ void Machine::saveGrid() {
 #endif
 }
 
-// Punto de la hoja (mm) -> objetivo de los motores. H y V se miden desde los HOME marcados (CALIBRAR > HOME):
-//   V -> motor X (carro): V = 0 es el HOME de X; X = V en mm reales, en el sentido de la hoja marcada.
-//   H -> motor Y (pivote): H = 0 es el HOME de Y; H en mm se convierte con la tabla medida de SheetMap.h.
-// Con H = 0 y V = 0 los ejes van exactamente al HOME, este donde este (no al centro del riel ni de la hoja). De la hoja
-// marcada (4, 6 o 9 puntos) solo se usa hacia donde crece cada eje. Lo que cae fuera de los limites de MOVER (topes, o
-// los puntos de la hoja si no hay topes) se RECHAZA, no se recorta.
+void Machine::setSheetCorner(bool corner) {
+  _sheetCorner = corner;
+#ifdef ARDUINO_ARCH_ESP32
+  Preferences p;
+  if (p.begin("dmp", false)) {
+    p.putBool("sorg", corner);
+    p.end();
+  }
+#endif
+}
+
+// Punto de la hoja (mm, desde el CENTRO del area) -> objetivo de los motores:
+//   V -> motor X (carro): V = 0 es el CENTRO DEL RIEL (el que deja CALIBRAR LIMITS con el promedio de las corridas);
+//        X = V en mm reales, en el sentido de la hoja marcada. No depende del HOME de X marcado.
+//   H -> motor Y (pivote): H = 0 es Y = 0 (HOME de Y); H en mm se convierte con la tabla medida de SheetMap.h.
+// AREA UTIL: H de -100 a +100 y V de -150 a +150 mm. Lo que cae fuera del area, de los topes (o de la hoja marcada si no
+// hay topes) o del rectangulo de los puntos marcados se RECHAZA, no se recorta. De la hoja marcada (4, 6 o 9 puntos) solo
+// se usa hacia donde crece cada eje y la CORRECCION de las esquinas (SheetMap.h: residuos).
 bool Machine::moveToSheet(float hMm, float vMm, const char** err, char src) {
   if (!_gN) { *err = "Hoja sin calibrar"; return false; }
   if (!_xHomed) { *err = "Calibra X primero"; return false; }
   if (!_yZeroed) { *err = "Y sin referencia"; return false; }
   if (isnan(hMm) || isnan(vMm)) { *err = "H o V invalido"; return false; }
+  const long rail = railForArea();
+  if (rail <= 0) { *err = "Falta CALIBRAR LIMITS"; return false; }  // sin el largo del riel no se sabe donde esta el centro
+  const char* bad = SheetMap::checkArea(hMm, vMm, Cfg::SHEET_W_MM / 2, Cfg::SHEET_H_MM / 2);
+  if (bad) { *err = bad; return false; }
+  const int nc = gridCols(_gN), nr = gridRows(_gN);
   int dirX, sgnY;
-  SheetMap::gridDirs(_gx, _gy, gridCols(_gN), gridRows(_gN), &dirX, &sgnY);
-  const SheetMap::Target t = SheetMap::hvFromHome(hMm, vMm, dirX, sgnY);
-  const char* bad = SheetMap::checkRange(t, xMinCm() * 10.0f, xMaxCm() * 10.0f, yMinDeg(), yMaxDeg(),
-                                         Cfg::X_MM_PER_STEP / 2.0f, Cfg::Y_DEG_PER_STEP * 0.5f);
+  SheetMap::gridDirs(_gx, _gy, nc, nr, &dirX, &sgnY);
+  // CORRECCION con las esquinas marcadas: modelo + diferencia (marcado - modelo) repartida por la hoja.
+  float rx[kMaxPts], ry[kMaxPts];
+  SheetMap::gridResiduals(_gx, _gy, nc, nr, Cfg::SHEET_W_MM / 2, Cfg::SHEET_H_MM / 2, SheetMap::railCenterSteps(rail),
+                          Cfg::X_MM_PER_STEP, Cfg::Y_DEG_PER_STEP, dirX, sgnY, rx, ry);
+  if (SheetMap::residTooBig(rx, ry, nc * nr)) { *err = "Remarca las esquinas"; return false; }  // era de otra area
+  const SheetMap::Resid res = SheetMap::residAt(rx, ry, nc, nr, hMm, vMm, Cfg::SHEET_W_MM / 2, Cfg::SHEET_H_MM / 2);
+  const SheetMap::Target t = SheetMap::correctedTarget(hMm, vMm, dirX, sgnY, res);  // X en mm desde el centro del riel
+  const float cOff = SheetMap::centerFromHomeMm(rail, _xOff, Cfg::X_MM_PER_STEP);  // centro del riel visto desde el HOME de X
+  bad = SheetMap::checkRange(t, xMinCm() * 10.0f - cOff, xMaxCm() * 10.0f - cOff, yMinDeg(), yMaxDeg(),
+                             Cfg::X_MM_PER_STEP / 2.0f, Cfg::Y_DEG_PER_STEP * 0.5f);
   if (bad) { *err = bad; return false; }
   // Tambien dentro de la hoja marcada, aunque los topes sean mas anchos (el rectangulo que encierran sus puntos).
-  bad = SheetMap::checkRange(t, (gridMin(_gx) - _xOff) * Cfg::X_MM_PER_STEP, (gridMax(_gx) - _xOff) * Cfg::X_MM_PER_STEP,
+  const float c0 = (float)SheetMap::railCenterSteps(rail);
+  bad = SheetMap::checkRange(t, (gridMin(_gx) - c0) * Cfg::X_MM_PER_STEP, (gridMax(_gx) - c0) * Cfg::X_MM_PER_STEP,
                              gridMin(_gy) * Cfg::Y_DEG_PER_STEP, gridMax(_gy) * Cfg::Y_DEG_PER_STEP, Cfg::X_MM_PER_STEP / 2.0f,
                              Cfg::Y_DEG_PER_STEP * 0.5f, "V fuera de la hoja", "H fuera de la hoja");
   if (bad) { *err = bad; return false; }
-  return moveCore(t.xMm / 10.0f, t.yDeg, 100, err, src, true);
+  return moveCore((cOff + t.xMm) / 10.0f, t.yDeg, 100, err, src, true);
 }
 
 // ---- HOME marcado (CALIBRAR > HOME) ----
@@ -457,6 +534,7 @@ void Machine::update() {
     guardLimits();
   }
   if (_yh != YHome::None) updateHomeY();  // HOME de Y (al cero del AS5600), a la vez que el de X si es HOME completo
+  updateYTrim();                          // correccion de Y con el AS5600 tras un movimiento
 
   // Los pasos los da el temporizador de hardware de cada motor (Stepper28); aqui solo se apagan las bobinas en reposo.
   _x.service();
@@ -500,6 +578,7 @@ bool Machine::moveCore(float xCm, float angleDeg, int speedPct, const char** err
   _error = "";
   _x.moveTo(SheetMap::xStepsFromHome(xCm * 10.0f, Cfg::X_MM_PER_STEP, _xOff));  // X se cuenta desde el HOME marcado
   _y.moveTo(lroundf(Cfg::ANGLE_SIGN * angleDeg / Cfg::Y_DEG_PER_STEP));
+  if (checkRange) startYTrim(); else _yt = YTrim::Off;  // en CALIBRAR todo es libre: nada se corrige solo
   _src = src;
   _seq = _seq + 1;
   return true;
@@ -526,6 +605,7 @@ bool Machine::turnAxis(Stepper28& s, const char* name, float revs, int speedPct,
 
   (void)speedPct;
   _error = "";
+  _yt = YTrim::Off;  // giro manual por vueltas: no se corrige
   s.moveBy(lroundf(revs * Cfg::STEPS_PER_REV));
   return true;
 }
@@ -533,6 +613,7 @@ bool Machine::turnAxis(Stepper28& s, const char* name, float revs, int speedPct,
 // Paro: detiene los motores. NO apaga el laser (el laser solo se apaga con su boton).
 void Machine::emergencyStop() {
   _ts = TestState::None;
+  _yt = YTrim::Off;
   _x.stop();
   _y.stop();
   if (_yh != YHome::None) _y.setSpeed(_spsY);  // el HOME de Y iba a velocidad baja
@@ -561,11 +642,109 @@ void Machine::guardLimits() {
   if (_limMin.active() && _x.target() < _x.position()) {
     _x.stop();
     _error = "X- limit switch";
+    onLimitHit(false);
   }
   if (_limMax.active() && _x.target() > _x.position()) {
     _x.stop();
     _error = "X+ limit switch";
+    onLimitHit(true);
   }
+}
+
+// ---- PASOS PERDIDOS ---------------------------------------------------------------------------------------------------
+// X no tiene sensor: cuando el carro toca un final de carrera YA SABEMOS donde esta (X- = 0, X+ = largo del riel), asi que la
+// diferencia con el contador son los pasos que se perdieron desde la ultima referencia. Se anota y el contador se corrige.
+void Machine::onLimitHit(bool atMax) {
+  const long rail = railForArea();
+  if (!_xHomed || rail <= 0) return;  // sin largo del riel no se sabe que posicion le toca al interruptor
+  const long expected = atMax ? rail : 0;
+  const long lost = StepGuard::xLostAtLimit(_x.position(), expected);
+  _xLostLast = lost;
+  _xLostTotal = _xLostTotal + labs(lost);
+  _xRefs = _xRefs + 1;
+  _x.setPosition(expected);  // el interruptor manda: el contador de X vuelve a la realidad
+  _src = 'M';
+  _seq = _seq + 1;
+  Serial.printf("[xref] toco %s en el paso %ld (le tocaba %ld): diferencia %+ld pasos (%.2f mm); contador corregido\n",
+                atMax ? "X+" : "X-", expected + lost, expected, lost, lost * Cfg::X_MM_PER_STEP);
+}
+
+// Y SI tiene sensor (AS5600): despues de un movimiento de MOVER / IR / GUARDADOS se espera a que Y pare y el sensor se asiente,
+// se compara el angulo pedido con el real y, si la diferencia pasa de kYTrimTolDeg, se corrige (hasta kYTrimTries veces,
+// despacio). Los pasos de la correccion no se cuentan en la posicion (igual que la holgura): el contador sigue siendo el
+// objetivo y la diferencia queda anotada como paso perdido. Si una correccion EMPEORA el error, el sensor gira al reves que
+// el motor (ENC_INVERT): la correccion se apaga y avisa. Cada paso sale en el monitor serie con el prefijo [trimY].
+void Machine::startYTrim() {
+  if (_ytBad || !encoderReady()) { _yt = YTrim::Off; return; }
+  _ytPos = _y.target();
+  _ytWant = Cfg::ANGLE_SIGN * _ytPos * Cfg::Y_DEG_PER_STEP;
+  _ytTries = 0;
+  _ytAbsorbed = 0;
+  _ytT = millis();
+  _yt = YTrim::Wait;
+}
+
+void Machine::endYTrim(bool ok) {
+  if (_ytAbsorbed != 0) {
+    _yLostLast = _ytAbsorbed;
+    _yLostTotal = _yLostTotal + labs(_ytAbsorbed);
+    _yTrims = _yTrims + 1;
+  }
+  Serial.printf("[trimY] fin: %s, correccion total %+ld pasos\n", ok ? "ok" : "NO quedo", _ytAbsorbed);
+  _yt = YTrim::Off;
+}
+
+void Machine::updateYTrim() {
+  if (_yt == YTrim::Off) return;
+  if (homing()) { _yt = YTrim::Off; return; }  // un HOME toma el mando (HOME Y ya es de lazo cerrado)
+  const uint32_t now = millis();
+  if (_yt == YTrim::Fix) {
+    if (_y.target() != _ytFixTarget) { _yt = YTrim::Off; return; }  // otro movimiento reemplazo la correccion
+    if (_y.isRunning()) return;
+    _y.setSpeed(_spsY);
+    _ytAbsorbed += _y.position() - _ytPos;  // pasos que se dieron de mas
+    _y.setPosition(_ytPos);                 // no cuentan: el contador vuelve al objetivo
+    _ytT = now;
+    _yt = YTrim::Wait;
+    return;
+  }
+  // Wait: Y debe estar quieto y el sensor asentado (3 lecturas)
+  if (_y.isRunning()) { _ytT = now; return; }
+  if (now - _ytT < kYSettleMs) return;
+  if (!encoderReady()) { _yt = YTrim::Off; return; }
+  const float err = _ytWant - encoderDeg();
+  if (_ytTries > 0 && StepGuard::trimWorse(_ytErr0, err, kYTrimWorseDeg)) {
+    _ytBad = true;
+    _error = "Sensor Y al reves";
+    Serial.printf("[trimY] la correccion EMPEORO el error (%+.2f -> %+.2f): el AS5600 gira al reves que el motor. Correccion "
+                  "apagada; falta ENC_INVERT en dmp_config.h.\n", _ytErr0, err);
+    endYTrim(false);
+    _src = 'M';
+    _seq = _seq + 1;
+    return;
+  }
+  const StepGuard::Trim tr = StepGuard::yTrim(err, kYTrimTolDeg, kYTrimMaxDeg, Cfg::Y_DEG_PER_STEP, Cfg::ANGLE_SIGN);
+  if (tr.act == StepGuard::TrimAct::Ok) { endYTrim(true); return; }
+  if (tr.act == StepGuard::TrimAct::TooBig) {
+    Serial.printf("[trimY] error de %+.2f grd: demasiado grande para confiar en el sensor, no se corrige\n", err);
+    _error = "Y: AS5600 difiere";
+    endYTrim(false);
+    return;
+  }
+  if (_ytTries >= kYTrimTries) {
+    Serial.printf("[trimY] sigue a %+.2f grd despues de %d correcciones\n", err, _ytTries);
+    _error = "Y no llega";
+    endYTrim(false);
+    return;
+  }
+  Serial.printf("[trimY] pedido %+.2f, sensor %+.2f: error %+.2f grd -> %+ld pasos (intento %d)\n", _ytWant, _ytWant - err, err,
+                tr.steps, _ytTries + 1);
+  _ytErr0 = err;
+  _ytTries++;
+  _y.setSpeed(min(_spsY, kYTrimSps));
+  _y.moveBy(tr.steps);
+  _ytFixTarget = _y.target();
+  _yt = YTrim::Fix;
 }
 
 // ---- Homing ------------------------------------------------------------------
@@ -776,6 +955,7 @@ void Machine::cancelHome() {
   if (_yh != YHome::None) _y.setSpeed(_spsY);  // el HOME de Y iba a velocidad baja
   _ts = TestState::None;
   _yh = YHome::None;
+  _yt = YTrim::Off;
   _xHomed = xRef;
   _calibrated = _xHomed && _yZeroed;
   _error = wasHome ? "Home cancelled" : "Calibration cancelled";

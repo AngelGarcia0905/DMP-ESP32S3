@@ -72,15 +72,36 @@ class Machine {
   static int gridRows(int n) { return n == 9 ? 3 : 2; }
   static const char* pointName(int n, int i);                 // "SUP IZQ", "CENTRO", ...
   static void pointSheetMm(int n, int i, float* h, float* v);  // donde cae ese punto en la hoja (mm)
-  bool beginGrid(int n, const char** err);  // empieza a marcar n puntos (4, 6 o 9); la calibracion vigente no cambia aun
+  // Empieza a marcar n puntos (4, 6 o 9); la calibracion vigente no cambia hasta commitGrid(). Con keep = true se AGREGAN
+  // puntos: los de la calibracion vigente se conservan (4 -> 6 o 9, 6 -> 9) y solo faltan los nuevos; nextPoint() dice cual
+  // toca. Con keep = false hay que marcar todos.
+  bool beginGrid(int n, const char** err, bool keep = false);
+  bool pointKept(int i) const { return i >= 0 && i < kMaxPts && (_pHave & (1 << i)); }  // ese punto ya esta marcado
+  int nextPoint(int from) const;  // primer punto desde 'from' que falta marcar (_pN = ya estan todos)
+  bool gridStale() const;         // la hoja vigente no concuerda con el area (hay que remarcarla), o no se puede revisar
   bool markPoint(int i, const char** err);  // la posicion actual pasa a ser el punto i de la rejilla que se esta marcando
   void commitGrid();                        // termina: la rejilla marcada pasa a ser la vigente y se guarda en la flash
   int gridPoints() const { return _gN; }    // puntos de la calibracion vigente (0 = hoja sin calibrar)
   bool moveToSheet(float hMm, float vMm, const char** err, char src = 'S');
+  // Origen de H/V que se MUESTRA (AJUSTES > ORIGEN HOJA): false = centro del area, true = esquina inferior izquierda.
+  // Solo cambia los numeros de la pantalla; moveToSheet siempre recibe centro = 0. Se guarda en la flash ("sorg").
+  bool sheetCorner() const { return _sheetCorner; }
+  void setSheetCorner(bool corner);
   // Igual que moveTo (ya no hay limites de rango); se usa al marcar los puntos y en MEDIR AVANCE.
   bool jogTo(float xCm, float angleDeg, const char** err, char src = 'S');
   // Pone el contador de Y en el angulo que da el AS5600 (grados, mismo signo que la pantalla). Se usa al encender.
   void setYFromDeg(float deg);
+  // ---- PASOS PERDIDOS ----
+  // Y: tras un movimiento de MOVER / IR / GUARDADOS, si el AS5600 esta listo se compara el angulo pedido con el real y se
+  // corrige la diferencia (hasta kYTrimTries veces); la diferencia queda anotada. X no tiene sensor: cada vez que el
+  // carro toca un final de carrera, el contador se vuelve a referenciar y la diferencia queda anotada.
+  long xLostLast() const { return _xLostLast; }    // ultima diferencia de X al tocar un final de carrera (pasos, con signo)
+  long xLostTotal() const { return _xLostTotal; }  // suma de las diferencias (sin signo)
+  int xRefCount() const { return _xRefs; }         // veces que X se re-referencio en un final de carrera
+  long yLostLast() const { return _yLostLast; }    // ultima correccion de Y (pasos, con signo)
+  long yLostTotal() const { return _yLostTotal; }  // suma de las correcciones (sin signo)
+  int yTrimCount() const { return _yTrims; }       // movimientos de Y que necesitaron correccion
+  bool yTrimBlocked() const { return _ytBad; }     // true = el sensor giro al reves: la correccion se apago
   // ---- PUNTOS guardados (modulo PUNTOS): hasta 8 posiciones a las que se puede volver ----
   // Se guarda la posicion actual de X (pasos desde el final de carrera X-) y de Y (pasos con el signo que se muestra), en la
   // flash ("dmp": smask, sx0..sx7, sy0..sy7). Necesitan X con referencia y Y con referencia, igual que los topes. Al re-marcar
@@ -177,6 +198,18 @@ class Machine {
   enum class TestState : uint8_t { None, Seek, Leave, Cross, ToMiddle };
 
   bool moveCore(float xCm, float angleDeg, int speedPct, const char** err, char src, bool checkRange);
+  // AREA UTIL (Cfg::SHEET_W_MM x SHEET_H_MM, centrada en el centro del riel y en Y = 0): limita MOVER siempre que el eje
+  // tenga referencia; los topes / la hoja marcada solo pueden encerrarla mas.
+  long railForArea() const { return _savedRail > 0 ? _savedRail : _railSteps; }  // largo del riel conocido (0 = ninguno)
+  bool areaX() const { return _xHomed && railForArea() > 0; }
+  bool areaY() const { return _yZeroed; }
+  float areaXLoCm() const;
+  float areaXHiCm() const;
+  // Correccion de Y con el AS5600 y re-referencia de X en los finales de carrera (PASOS PERDIDOS).
+  void startYTrim();
+  void updateYTrim();
+  void endYTrim(bool ok);
+  void onLimitHit(bool atMax);
   void setXHome(long steps);
   long homeDest(long rail) const;
   void loadGrid();
@@ -244,6 +277,25 @@ class Machine {
   As5600* _enc = nullptr;
   long _xOff = 0;           // HOME de X en pasos desde X- (flash "dmp": hxo); X = 0 ahi
   bool _xHomeSet = false;   // flash "dmp": hxs
+  bool _sheetCorner = false;  // origen mostrado de la hoja: false centro, true esquina inferior izquierda
+
+  // PASOS PERDIDOS. Correccion de Y: Wait = esperando que Y pare y el sensor se asiente; Fix = corrigiendo.
+  enum class YTrim : uint8_t { Off, Wait, Fix };
+  static constexpr float kYTrimTolDeg = 0.25f;    // dentro de esto no se toca (el AS5600 distingue 0.088 grados)
+  static constexpr float kYTrimMaxDeg = 5.0f;     // mas que esto no se confia en el sensor: no se corrige
+  static constexpr float kYTrimWorseDeg = 0.15f;  // si la correccion EMPEORA mas que esto, el sensor esta al reves
+  static constexpr int kYTrimTries = 2;           // correcciones por movimiento
+  static constexpr int kYTrimSps = 400;           // velocidad de las correcciones (pasos/s)
+  volatile YTrim _yt = YTrim::Off;
+  bool _ytBad = false;       // el sensor giro al reves: correccion apagada hasta reiniciar
+  int _ytTries = 0;
+  long _ytPos = 0;           // objetivo de Y (pasos del motor) que se esta verificando
+  long _ytFixTarget = 0;     // objetivo de la correccion en curso (para notar si otro movimiento la reemplazo)
+  long _ytAbsorbed = 0;      // pasos de correccion de este movimiento (no se cuentan en la posicion)
+  float _ytWant = 0, _ytErr0 = 0;
+  uint32_t _ytT = 0;
+  volatile long _xLostLast = 0, _xLostTotal = 0, _yLostLast = 0, _yLostTotal = 0;
+  volatile int _xRefs = 0, _yTrims = 0;
   volatile long _railSteps = 0;  // largo del riel en pasos (0 = sin medir)
   float _angleOffset = 0.0f;
   const char* _error = "";
@@ -273,6 +325,7 @@ class Machine {
   uint8_t _gN = 0;                             // 0 = sin calibrar
   long _px[kMaxPts] = {}, _py[kMaxPts] = {};  // la que se esta marcando
   uint8_t _pN = 0;
+  uint16_t _pHave = 0;  // bit i = punto i ya marcado (conservado o marcado en esta vuelta)
 
   // topes: X en pasos del motor (0 = min, 1 = max), Y en pasos del angulo mostrado (0 = min, 1 = max)
   long _tx[2] = {}, _ty[2] = {};
