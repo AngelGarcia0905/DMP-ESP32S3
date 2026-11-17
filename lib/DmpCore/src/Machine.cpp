@@ -381,6 +381,11 @@ bool Machine::moveToSheet(float hMm, float vMm, const char** err, char src) {
   const char* bad = SheetMap::checkRange(t, xMinCm() * 10.0f, xMaxCm() * 10.0f, yMinDeg(), yMaxDeg(),
                                          Cfg::X_MM_PER_STEP / 2.0f, Cfg::Y_DEG_PER_STEP * 0.5f);
   if (bad) { *err = bad; return false; }
+  // Tambien dentro de la hoja marcada, aunque los topes sean mas anchos (el rectangulo que encierran sus puntos).
+  bad = SheetMap::checkRange(t, (gridMin(_gx) - _xOff) * Cfg::X_MM_PER_STEP, (gridMax(_gx) - _xOff) * Cfg::X_MM_PER_STEP,
+                             gridMin(_gy) * Cfg::Y_DEG_PER_STEP, gridMax(_gy) * Cfg::Y_DEG_PER_STEP, Cfg::X_MM_PER_STEP / 2.0f,
+                             Cfg::Y_DEG_PER_STEP * 0.5f, "V fuera de la hoja", "H fuera de la hoja");
+  if (bad) { *err = bad; return false; }
   return moveCore(t.xMm / 10.0f, t.yDeg, 100, err, src, true);
 }
 

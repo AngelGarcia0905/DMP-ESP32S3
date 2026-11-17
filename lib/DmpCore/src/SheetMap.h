@@ -60,9 +60,10 @@ inline long xStepsFromHome(float xMm, float mmPerStep, long xOff) { return lroun
 
 // Revisa el objetivo contra los limites de MOVER (en las mismas unidades de HOME). nullptr = dentro; si no, el mensaje.
 inline const char* checkRange(const Target& t, float xMinMm, float xMaxMm, float yMinDeg, float yMaxDeg, float halfStepMm,
-                              float halfStepDeg) {
-  if (t.xMm < xMinMm - halfStepMm || t.xMm > xMaxMm + halfStepMm) return "V fuera de limites";
-  if (t.yDeg < yMinDeg - halfStepDeg || t.yDeg > yMaxDeg + halfStepDeg) return "H fuera de limites";
+                              float halfStepDeg, const char* vMsg = "V fuera de limites",
+                              const char* hMsg = "H fuera de limites") {
+  if (t.xMm < xMinMm - halfStepMm || t.xMm > xMaxMm + halfStepMm) return vMsg;
+  if (t.yDeg < yMinDeg - halfStepDeg || t.yDeg > yMaxDeg + halfStepDeg) return hMsg;
   return nullptr;
 }
 

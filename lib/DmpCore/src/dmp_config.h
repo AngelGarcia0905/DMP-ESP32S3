@@ -34,7 +34,7 @@ inline float xReductionEff() { return 0.0613f / X_MM_PER_STEP; }
 inline float yReductionEff() { return (360.0f / STEPS_PER_REV) / Y_DEG_PER_STEP; }
 // Holgura de los engranes de Y al cambiar de sentido: el motor da estos pasos EXTRA (no se cuentan en la posicion) antes
 // de que el laser empiece a moverse hacia el otro lado. Medido el 2026-11-12: al regresar hicieron falta 4 a 10 pasos de
-// mas; 7 es el punto de partida (0 = sin compensar). Subirlo si al regresar todavia queda corto, bajarlo si se pasa.
+// mas; 10 es el valor actual (0 = sin compensar). Subirlo si al regresar todavia queda corto, bajarlo si se pasa.
 constexpr int Y_BACKLASH_STEPS = 10;
 
 // Flip these if an axis moves the wrong way (positive X = right, positive Y = clockwise).
